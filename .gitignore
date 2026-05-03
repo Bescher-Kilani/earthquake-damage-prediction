@@ -1,0 +1,40 @@
+cat > .gitignore << 'EOF'
+# Data files (large CSVs)
+*.csv
+data/
+*/data/
+
+# Output/Prediction files
+*_prediction.csv
+Team*_prediction.csv
+
+# Temporary/Lock files
+.~lock.*
+*.tmp
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+# Virtual environments
+venv/
+env/
+*/venv/
+*/env/
+
+# IDE settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Large presentation files (optional)
+*.pptx
+EOF
+
