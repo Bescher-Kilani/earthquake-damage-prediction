@@ -2,20 +2,31 @@
 
 ---
 
+## Project Structure
+
+```
+week2-cleaning-pipeline/
+├── pipeline.py
+├── README.md
+├── requirements.txt
+├── data/
+│   ├── train_values.csv
+│   ├── train_labels.csv
+│   └── test_values.csv
+└── Team2_prediction.csv (generated)
+```
+
 ## Setup
 
 ```bash
+# Install dependencies
 pip install -r requirements.txt
+
+# Create data folder
+mkdir -p data
 ```
 
-## Data Structure
-
-```
-data/
-  ├── train_values.csv
-  ├── train_labels.csv
-  └── test_values.csv
-```
+**Note:** Place CSV files in `data/` folder before running.
 
 ## Run Pipeline
 

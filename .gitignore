@@ -21,7 +21,6 @@ __pycache__/
 # Baseline/old files
 ../baseline_*.py
 baseline_*.py
-**/baseline_*.py
 
 # Virtual environments
 venv/
