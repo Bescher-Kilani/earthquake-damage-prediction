@@ -1,6 +1,6 @@
 # Week 02: Cleaning & Pipeline
 
-Earthquake Damage Prediction - Simple baseline pipeline.
+---
 
 ## Setup
 
@@ -8,30 +8,48 @@ Earthquake Damage Prediction - Simple baseline pipeline.
 pip install -r requirements.txt
 ```
 
-## Data
+## Data Structure
 
-Place these files in `data/`:
-- `train_values.csv`
-- `train_labels.csv`
-- `test_values.csv`
+```
+data/
+  ├── train_values.csv
+  ├── train_labels.csv
+  └── test_values.csv
+```
 
-## Run
+## Run Pipeline
 
 ```bash
 python pipeline.py
 ```
 
-This will create `Team2_prediction.csv` with the predictions.
+**Output:** `Team2_prediction.csv`
+
+---
 
 ## Pipeline Steps
 
-1. Load data from `data/`
-2. Clean data:
-   - Remove uninformative features (only one unique value)
-   - Encode categorical features (strings → numbers)
-3. Train Decision Tree classifier
-4. Make predictions on test set
-5. Save to `Team2_prediction.csv`
+1. **Load data** from `data/` folder
+2. **Clean data:**
+   - Handle missing values (age=0 → median)
+   - Remove uninformative features
+   - Encode categorical features
+   - Remove highly correlated features (>0.7)
+3. **Train** Decision Tree classifier
+4. **Predict** on test set
+5. **Save** to `Team2_prediction.csv`
+
+---
+
+## Results
+
+**Validation Set:**
+- MCC: 0.4067
+- Accuracy: 0.6883
+
+**Features:** 38 → 36 (after cleaning)
+
+---
 
 ## Output Format
 
@@ -41,3 +59,12 @@ building_id,damage_grade
 99355,2
 ...
 ```
+
+---
+
+## Next Steps
+
+- Feature engineering
+- Try other models (Random Forest, XGBoost)
+- Hyperparameter tuning
+- Cross-validation

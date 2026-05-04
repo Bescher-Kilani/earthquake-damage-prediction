@@ -2,12 +2,16 @@
 Earthquake Damage Prediction Pipeline
 Week 02: Cleaning & Pipeline
 
-Simple pipeline that:
+Pipeline:
 1. Loads data
-2. Cleans data (removes uninformative features, encodes categorical variables)
-3. Trains Decision Tree
+2. Cleans data:
+   - Handles missing values (artificial defaults & imputation)
+   - Removes uninformative features
+   - Encodes categorical variables
+   - Removes highly correlated features
+3. Trains Decision Tree classifier
 4. Makes predictions
-5. Saves submission
+5. Saves submission file
 """
 
 import pandas as pd
@@ -15,6 +19,7 @@ import numpy as np
 from pathlib import Path
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.preprocessing import LabelEncoder
+from sklearn.impute import SimpleImputer
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import matthews_corrcoef, accuracy_score
 
@@ -45,19 +50,108 @@ def load_data():
     return X_train, y_train, X_test, test_ids
 
 
-def clean_data(X_train, X_test):
+def clean_data(X_train, X_test, correlation_threshold=0.7, handle_missing=True, 
+               artificial_missing_rules=None, add_missing_indicators=False):
     """
     Clean the data:
+    - Handle missing values (both explicit NaN and artificial defaults)
     - Remove uninformative features (only one unique value)
     - Encode categorical features
+    - Remove highly correlated features
     
     Decision is made on training data only!
+    
+    Args:
+        X_train: Training features
+        X_test: Test features
+        correlation_threshold: Threshold for removing correlated features (default 0.7)
+        handle_missing: Whether to handle missing values (default True)
+        artificial_missing_rules: Dict mapping feature names to values that should be treated as missing
+                                  Example: {'age': [0], 'geo_level_1_id': [0]}
+                                  Default: {'age': [0]}
+        add_missing_indicators: Whether to add binary features indicating missingness (default False)
     """
     print("="*60)
     print("CLEANING DATA")
     print("="*60)
     
-    # 1. Remove uninformative features
+    # Default artificial missing rules
+    if artificial_missing_rules is None:
+        artificial_missing_rules = {'age': [0]}
+    
+    # 1. Handle Missing Values
+    if handle_missing:
+        print("\n--- Step 1: Missing Value Handling ---")
+        
+        # 1a. Replace artificial missing values with NaN
+        if artificial_missing_rules:
+            print(f"Replacing artificial missing values:")
+            for feature, values in artificial_missing_rules.items():
+                if feature in X_train.columns:
+                    for val in values:
+                        train_count = (X_train[feature] == val).sum()
+                        test_count = (X_test[feature] == val).sum()
+                        
+                        if train_count > 0 or test_count > 0:
+                            print(f"  {feature} = {val} → NaN (Train: {train_count}, Test: {test_count})")
+                            X_train[feature] = X_train[feature].replace(val, np.nan)
+                            X_test[feature] = X_test[feature].replace(val, np.nan)
+        
+        # 1b. Add missing indicators if requested
+        if add_missing_indicators:
+            print("\nAdding missing indicators:")
+            for col in X_train.columns:
+                if X_train[col].isnull().sum() > 0:
+                    indicator_name = f"{col}_was_missing"
+                    X_train[indicator_name] = X_train[col].isnull().astype(int)
+                    X_test[indicator_name] = X_test[col].isnull().astype(int)
+                    print(f"  Added: {indicator_name}")
+        
+        # 1c. Impute missing values
+        # Separate numeric and categorical columns
+        numeric_cols = X_train.select_dtypes(include=[np.number]).columns.tolist()
+        categorical_cols = X_train.select_dtypes(include=['object', 'string']).columns.tolist()
+        
+        # Impute numeric features with median
+        if numeric_cols:
+            missing_numeric = [col for col in numeric_cols if X_train[col].isnull().sum() > 0]
+            if missing_numeric:
+                print(f"\nImputing {len(missing_numeric)} numeric features with median (fitted on train):")
+                for col in missing_numeric:
+                    train_missing = X_train[col].isnull().sum()
+                    test_missing = X_test[col].isnull().sum()
+                    
+                    # Calculate median on non-missing training values
+                    median_value = X_train[col].median()
+                    
+                    # Fill both train and test (use assignment instead of inplace)
+                    X_train[col] = X_train[col].fillna(median_value)
+                    X_test[col] = X_test[col].fillna(median_value)
+                    
+                    print(f"  {col}: median={median_value:.2f} (Train NaN: {train_missing}, Test NaN: {test_missing})")
+        
+        # Impute categorical features with mode
+        if categorical_cols:
+            missing_categorical = [col for col in categorical_cols if X_train[col].isnull().sum() > 0]
+            if missing_categorical:
+                print(f"\nImputing {len(missing_categorical)} categorical features with mode (fitted on train):")
+                for col in missing_categorical:
+                    train_missing = X_train[col].isnull().sum()
+                    test_missing = X_test[col].isnull().sum()
+                    
+                    # Calculate mode on non-missing training values
+                    mode_value = X_train[col].mode()[0] if len(X_train[col].mode()) > 0 else 'unknown'
+                    
+                    # Fill both train and test (use assignment instead of inplace)
+                    X_train[col] = X_train[col].fillna(mode_value)
+                    X_test[col] = X_test[col].fillna(mode_value)
+                    
+                    print(f"  {col}: mode={mode_value} (Train NaN: {train_missing}, Test NaN: {test_missing})")
+        
+        print("\n✓ Missing value handling complete")
+    
+    # 2. Remove uninformative features
+    print("\n--- Step 2: Uninformative Feature Removal ---")
     uninformative = [col for col in X_train.columns if X_train[col].nunique() == 1]
     
     if uninformative:
@@ -67,7 +161,8 @@ def clean_data(X_train, X_test):
     else:
         print("No uninformative features found")
     
-    # 2. Encode categorical features
+    # 3. Encode categorical features
+    print("\n--- Step 3: Categorical Encoding ---")
     categorical_cols = X_train.select_dtypes(include=['object', 'string']).columns.tolist()
     
     if categorical_cols:
@@ -86,6 +181,35 @@ def clean_data(X_train, X_test):
             test_col_str = X_test[col].astype(str)
             class_to_int = {cls: i for i, cls in enumerate(encoder.classes_)}
             X_test[col] = test_col_str.map(lambda x: class_to_int.get(x, -1))
+    
+    # 4. Remove highly correlated features
+    print("\n--- Step 4: Highly Correlated Feature Removal ---")
+    # Calculate correlation matrix on TRAINING data only (Pearson correlation)
+    corr_matrix = X_train.corr().abs()
+    
+    # Get upper triangle of correlation matrix (avoid duplicates)
+    upper_tri = corr_matrix.where(
+        np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)
+    )
+    
+    # Find features with correlation > threshold
+    to_drop = [
+        column for column in upper_tri.columns 
+        if any(upper_tri[column] > correlation_threshold)
+    ]
+    
+    if to_drop:
+        print(f"Removing {len(to_drop)} highly correlated features (threshold={correlation_threshold}):")
+        # Show which pairs were correlated
+        for col in to_drop:
+            correlations = upper_tri[col][upper_tri[col] > correlation_threshold]
+            for corr_col, corr_val in correlations.items():
+                print(f"  - {col} <-> {corr_col}: {corr_val:.3f}")
+        
+        X_train = X_train.drop(columns=to_drop)
+        X_test = X_test.drop(columns=to_drop)
+    else:
+        print(f"No highly correlated features found (threshold={correlation_threshold})")
     
     print("="*60 + "\n")
     
@@ -113,11 +237,22 @@ def train_model(X_train, y_train):
     return model
 
 
-def evaluate_model(X_train, y_train):
+def evaluate_model(X_train, y_train, metrics=None):
     """
     Evaluate model performance using train/validation split.
-    Returns MCC and Accuracy scores.
+    
+    Args:
+        X_train: Training features
+        y_train: Training labels
+        metrics: List of metrics to compute. Options: 'mcc', 'accuracy'
+                 Default: ['mcc', 'accuracy']
+    
+    Returns:
+        Dictionary with computed metrics
     """
+    if metrics is None:
+        metrics = ['mcc', 'accuracy']
+    
     print("="*60)
     print("EVALUATING MODEL")
     print("="*60)
@@ -140,15 +275,23 @@ def evaluate_model(X_train, y_train):
     y_pred = eval_model.predict(X_val)
     
     # Calculate metrics
-    mcc = matthews_corrcoef(y_val, y_pred)
-    acc = accuracy_score(y_val, y_pred)
+    results = {}
     
     print(f"Validation Set Performance:")
-    print(f"  MCC (Matthews Correlation Coefficient): {mcc:.4f}")
-    print(f"  Accuracy: {acc:.4f}")
+    
+    if 'mcc' in metrics:
+        mcc = matthews_corrcoef(y_val, y_pred)
+        results['mcc'] = mcc
+        print(f"  MCC (Matthews Correlation Coefficient): {mcc:.4f}")
+    
+    if 'accuracy' in metrics:
+        acc = accuracy_score(y_val, y_pred)
+        results['accuracy'] = acc
+        print(f"  Accuracy: {acc:.4f}")
+    
     print("="*60 + "\n")
     
-    return mcc, acc
+    return results
 
 
 def make_predictions(model, X_test):
@@ -201,10 +344,16 @@ def main():
     X_train, y_train, X_test, test_ids = load_data()
     
     # 2. Clean data
-    X_train, X_test = clean_data(X_train, X_test)
+    X_train, X_test = clean_data(
+        X_train, X_test, 
+        correlation_threshold=0.7,
+        handle_missing=True,
+        artificial_missing_rules={'age': [0]},
+        add_missing_indicators=False
+    )
     
     # 3. Evaluate model performance
-    mcc, acc = evaluate_model(X_train, y_train)
+    results = evaluate_model(X_train, y_train, metrics=['mcc', 'accuracy'])
     
     # 4. Train model on full training set
     model = train_model(X_train, y_train)
@@ -220,8 +369,8 @@ def main():
     print("SUMMARY")
     print("="*60)
     print(f"Estimated Performance (on validation set):")
-    print(f"  MCC: {mcc:.4f}")
-    print(f"  Accuracy: {acc:.4f}")
+    print(f"  MCC: {results['mcc']:.4f}")
+    print(f"  Accuracy: {results['accuracy']:.4f}")
     print(f"\nSubmission file: Team2_prediction.csv")
     print("="*60 + "\n")
     

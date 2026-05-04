@@ -18,6 +18,11 @@ __pycache__/
 *.pyo
 .ipynb_checkpoints/
 
+# Baseline/old files
+../baseline_*.py
+baseline_*.py
+**/baseline_*.py
+
 # Virtual environments
 venv/
 env/
