@@ -24,6 +24,8 @@ from sklearn.impute import SimpleImputer
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import matthews_corrcoef, accuracy_score
 
+from baseline_prediction import X_train
+
 
 def load_data():
     """
@@ -232,6 +234,61 @@ def target_encode_features(X_train, y_train, X_test, features, smoothing=10):
     
     return X_train, X_test
 
+def create_feature_combinations(X_train, y_train, X_test, smoothing=10):
+    """
+    Create interaction features by combining categorical features.
+    
+    Feature Combinations:
+        1. geo_level_1 × foundation_type: Regional building practices
+        2. position × plan_configuration: Structural stability
+        3. roof_type × ground_floor_type: Roof-ground interactions
+    """
+    print("\n--- Creating Feature Combinations ---")
+    
+    # Store combinations to create
+    combinations = [
+        ('geo_level_1_id', 'foundation_type', 'geo_foundation'),
+        ('position', 'plan_configuration', 'position_plan'),
+        ('roof_type', 'ground_floor_type', 'roof_ground'),
+    ]
+    
+    global_mean = y_train.mean()
+    created_count = 0
+    
+    for feat1, feat2, combo_name in combinations:
+        # Check if both features exist
+        if feat1 in X_train.columns and feat2 in X_train.columns:
+            print(f"  Creating {combo_name} ({feat1} × {feat2})")
+            
+            # Create combination string
+            X_train[combo_name] = X_train[feat1].astype(str) + '__' + X_train[feat2].astype(str)
+            X_test[combo_name] = X_test[feat1].astype(str) + '__' + X_test[feat2].astype(str)
+            
+            # Target encode the combination
+            agg_data = pd.DataFrame({
+                'target': y_train,
+                'category': X_train[combo_name]
+            }).groupby('category')['target'].agg(['mean', 'count'])
+            
+            agg_data['smoothed_mean'] = (
+                (agg_data['mean'] * agg_data['count'] + smoothing * global_mean) 
+                / (agg_data['count'] + smoothing)
+            )
+            
+            # Map to datasets
+            X_train[combo_name + '_enc'] = X_train[combo_name].map(agg_data['smoothed_mean'])
+            X_test[combo_name + '_enc'] = X_test[combo_name].map(agg_data['smoothed_mean']).fillna(global_mean)
+            
+            # Drop categorical version, keep encoded
+            X_train = X_train.drop(columns=[combo_name])
+            X_test = X_test.drop(columns=[combo_name])
+            
+            created_count += 1
+            print(f"    → {combo_name}_enc (range: [{X_train[combo_name + '_enc'].min():.3f}, {X_train[combo_name + '_enc'].max():.3f}])")
+    
+    print(f"✓ Created {created_count} combination features\n")
+    
+    return X_train, X_test
 
 def clean_data(X_train, y_train, X_test, correlation_threshold=0.9, handle_missing=True, 
                artificial_missing_rules=None, add_missing_indicators=False):
@@ -418,6 +475,10 @@ def clean_data(X_train, y_train, X_test, correlation_threshold=0.9, handle_missi
             class_to_int = {cls: i for i, cls in enumerate(encoder.classes_)}
             X_test[col] = test_col_str.map(lambda x: class_to_int.get(x, -1))
     
+    # ========== NEW: Create Feature Combinations ==========
+    print("\n--- Step 3.5: Feature Combinations ---")
+    X_train, X_test = create_feature_combinations(X_train, y_train, X_test, smoothing=10)
+
     # Apply Target Encoding to high-cardinality features
     if target_encode_features_list:
         X_train, X_test = target_encode_features(X_train, y_train, X_test, 
@@ -677,7 +738,14 @@ def main():
     print("="*60 + "\n")
     
     print("PIPELINE COMPLETE!\n")
+    import pandas as pd
 
+    # Berechne Korrelation jedes Features mit damage_grade
+    feature_target_corr = X_train.corrwith(y_train).abs().sort_values(ascending=False)
+
+    # Features mit hoher Target-Korrelation sind Kandidaten
+    top_features = feature_target_corr.head(10)
+    print(top_features)
 
 if __name__ == '__main__':
     main()
