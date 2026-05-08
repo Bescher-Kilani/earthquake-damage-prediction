@@ -24,8 +24,6 @@ from sklearn.impute import SimpleImputer
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import matthews_corrcoef, accuracy_score
 
-from baseline_prediction import X_train
-
 
 def load_data():
     """
@@ -234,291 +232,233 @@ def target_encode_features(X_train, y_train, X_test, features, smoothing=10):
     
     return X_train, X_test
 
-def create_feature_combinations(X_train, y_train, X_test, smoothing=10):
-    """
-    Create interaction features by combining categorical features.
-    
-    Feature Combinations:
-        1. geo_level_1 × foundation_type: Regional building practices
-        2. position × plan_configuration: Structural stability
-        3. roof_type × ground_floor_type: Roof-ground interactions
-    """
-    print("\n--- Creating Feature Combinations ---")
-    
-    # Store combinations to create
-    combinations = [
-        ('geo_level_1_id', 'foundation_type', 'geo_foundation'),
-        ('position', 'plan_configuration', 'position_plan'),
-        ('roof_type', 'ground_floor_type', 'roof_ground'),
-    ]
-    
-    global_mean = y_train.mean()
-    created_count = 0
-    
-    for feat1, feat2, combo_name in combinations:
-        # Check if both features exist
-        if feat1 in X_train.columns and feat2 in X_train.columns:
-            print(f"  Creating {combo_name} ({feat1} × {feat2})")
-            
-            # Create combination string
-            X_train[combo_name] = X_train[feat1].astype(str) + '__' + X_train[feat2].astype(str)
-            X_test[combo_name] = X_test[feat1].astype(str) + '__' + X_test[feat2].astype(str)
-            
-            # Target encode the combination
-            agg_data = pd.DataFrame({
-                'target': y_train,
-                'category': X_train[combo_name]
-            }).groupby('category')['target'].agg(['mean', 'count'])
-            
-            agg_data['smoothed_mean'] = (
-                (agg_data['mean'] * agg_data['count'] + smoothing * global_mean) 
-                / (agg_data['count'] + smoothing)
-            )
-            
-            # Map to datasets
-            X_train[combo_name + '_enc'] = X_train[combo_name].map(agg_data['smoothed_mean'])
-            X_test[combo_name + '_enc'] = X_test[combo_name].map(agg_data['smoothed_mean']).fillna(global_mean)
-            
-            # Drop categorical version, keep encoded
-            X_train = X_train.drop(columns=[combo_name])
-            X_test = X_test.drop(columns=[combo_name])
-            
-            created_count += 1
-            print(f"    → {combo_name}_enc (range: [{X_train[combo_name + '_enc'].min():.3f}, {X_train[combo_name + '_enc'].max():.3f}])")
-    
-    print(f"✓ Created {created_count} combination features\n")
-    
-    return X_train, X_test
 
 def clean_data(X_train, y_train, X_test, correlation_threshold=0.9, handle_missing=True, 
                artificial_missing_rules=None, add_missing_indicators=False):
-    """
-    Comprehensive data cleaning pipeline.
-    
-    IMPORTANT: All decisions are made based on TRAINING DATA ONLY to prevent data leakage!
-    
-    Steps:
-        1. Handle missing values:
-           - Identify artificial missing values (e.g., age=0)
-           - Optionally create missing indicators (preserves information about missingness)
-           - Impute with median (numeric) or mode (categorical)
-        
-        2. Recombine binary features into categorical features
-        
-        3. Remove uninformative features (only one unique value)
-        
-        4. Encode categorical features:
-           - Target Encoding: For high-cardinality features (>10-15 categories)
-           - Label Encoding: For low-cardinality features (<10 categories)
-        
-        5. Remove highly correlated features (reduces multicollinearity)
-    
-    Args:
-        X_train: Training features
-        y_train: Training labels (required for Target Encoding)
-        X_test: Test features
-        correlation_threshold: Threshold for removing correlated features (default 0.9)
-        handle_missing: Whether to handle missing values (default True)
-        artificial_missing_rules: Dict mapping features to values that represent missing
-                                  Example: {'age': [0]} treats age=0 as missing
-        add_missing_indicators: Whether to create binary features indicating missingness
-        
-    Returns:
-        X_train, X_test: Cleaned DataFrames ready for model training
-    """
-    print("="*60)
-    print("CLEANING DATA")
-    print("="*60)
-    
-    # Set default artificial missing rules if none provided
-    if artificial_missing_rules is None:
-        artificial_missing_rules = {'age': [0]}
-    
-    # ========== STEP 1: Missing Value Handling ==========
-    if handle_missing:
-        print("\n--- Step 1: Missing Value Handling ---")
-        
-        # 1a. Replace artificial missing values with NaN
-        # Some features use special values (like 0) to represent missing data
-        if artificial_missing_rules:
-            print(f"Replacing artificial missing values:")
-            for feature, values in artificial_missing_rules.items():
-                if feature in X_train.columns:
-                    for val in values:
-                        train_count = (X_train[feature] == val).sum()
-                        test_count = (X_test[feature] == val).sum()
-                        
-                        if train_count > 0 or test_count > 0:
-                            print(f"  {feature} = {val} → NaN (Train: {train_count}, Test: {test_count})")
-                            # Replace artificial missing value with actual NaN
-                            X_train[feature] = X_train[feature].replace(val, np.nan)
-                            X_test[feature] = X_test[feature].replace(val, np.nan)
-        
-        # 1b. Add missing indicators if requested
-        # Creates binary features indicating whether a value was originally missing
-        # This preserves information: "missing" itself can be predictive!
-        if add_missing_indicators:
-            print("\nAdding missing indicators:")
-            for col in X_train.columns:
-                if X_train[col].isnull().sum() > 0:
-                    indicator_name = f"{col}_was_missing"
-                    # Create binary indicator: 1 if missing, 0 if present
-                    X_train[indicator_name] = X_train[col].isnull().astype(int)
-                    X_test[indicator_name] = X_test[col].isnull().astype(int)
-                    print(f"  Added: {indicator_name}")
-        
-        # 1c. Impute missing values
-        # Separate numeric and categorical columns for different imputation strategies
-        numeric_cols = X_train.select_dtypes(include=[np.number]).columns.tolist()
-        categorical_cols = X_train.select_dtypes(include=['object', 'string']).columns.tolist()
-        
-        # Impute numeric features with median (more robust than mean)
-        if numeric_cols:
-            missing_numeric = [col for col in numeric_cols if X_train[col].isnull().sum() > 0]
-            if missing_numeric:
-                print(f"\nImputing {len(missing_numeric)} numeric features with median (fitted on train):")
-                for col in missing_numeric:
-                    train_missing = X_train[col].isnull().sum()
-                    test_missing = X_test[col].isnull().sum()
-                    
-                    # Calculate median ONLY on training data (prevent data leakage)
-                    median_value = X_train[col].median()
-                    
-                    # Fill missing values in both train and test with training median
-                    X_train[col] = X_train[col].fillna(median_value)
-                    X_test[col] = X_test[col].fillna(median_value)
-                    
-                    print(f"  {col}: median={median_value:.2f} (Train NaN: {train_missing}, Test NaN: {test_missing})")
-        
-        # Impute categorical features with mode (most frequent category)
-        if categorical_cols:
-            missing_categorical = [col for col in categorical_cols if X_train[col].isnull().sum() > 0]
-            if missing_categorical:
-                print(f"\nImputing {len(missing_categorical)} categorical features with mode (fitted on train):")
-                for col in missing_categorical:
-                    train_missing = X_train[col].isnull().sum()
-                    test_missing = X_test[col].isnull().sum()
-                    
-                    # Calculate mode ONLY on training data
-                    mode_value = X_train[col].mode()[0] if len(X_train[col].mode()) > 0 else 'unknown'
-                    
-                    # Fill missing values with training mode
-                    X_train[col] = X_train[col].fillna(mode_value)
-                    X_test[col] = X_test[col].fillna(mode_value)
-                    
-                    print(f"  {col}: mode={mode_value} (Train NaN: {train_missing}, Test NaN: {test_missing})")
-        
-        print("\n✓ Missing value handling complete")
-    
-    # ========== STEP 1.5: Recombine Binary Features ==========
-    # Convert binary one-hot features back to categorical
-    X_train, X_test = recombine_binary_features(X_train, X_test)
-    
-    # ========== STEP 2: Remove Uninformative Features ==========
-    print("\n--- Step 2: Uninformative Feature Removal ---")
-    # Features with only one unique value provide no information for prediction
-    uninformative = [col for col in X_train.columns if X_train[col].nunique() == 1]
-    
-    if uninformative:
-        print(f"Removing {len(uninformative)} uninformative features")
-        X_train = X_train.drop(columns=uninformative)
-        X_test = X_test.drop(columns=uninformative)
-    else:
-        print("No uninformative features found")
-    
-    # ========== STEP 3: Encode Categorical Features ==========
-    print("\n--- Step 3: Categorical Encoding ---")
-    # Identify all categorical columns
-    categorical_cols = X_train.select_dtypes(include=['object', 'string']).columns.tolist()
+	"""
+	Comprehensive data cleaning pipeline.
+	
+	IMPORTANT: All decisions are made based on TRAINING DATA ONLY to prevent data leakage!
+	
+	Steps:
+		1. Handle missing values:
+		   - Identify artificial missing values (e.g., age=0)
+		   - Optionally create missing indicators (preserves information about missingness)
+		   - Impute with median (numeric) or mode (categorical)
+		
+		2. Recombine binary features into categorical features
+		
+		3. Remove uninformative features (only one unique value)
+		
+		4. Encode categorical features:
+		   - Target Encoding: For high-cardinality features (>10-15 categories)
+		   - Label Encoding: For low-cardinality features (<10 categories)
+		
+		5. Remove highly correlated features (reduces multicollinearity)
+	
+	Args:
+		X_train: Training features
+		y_train: Training labels (required for Target Encoding)
+		X_test: Test features
+		correlation_threshold: Threshold for removing correlated features (default 0.9)
+		handle_missing: Whether to handle missing values (default True)
+		artificial_missing_rules: Dict mapping features to values that represent missing
+		                          Example: {'age': [0]} treats age=0 as missing
+		add_missing_indicators: Whether to create binary features indicating missingness
+		
+	Returns:
+		X_train, X_test: Cleaned DataFrames ready for model training
+	"""
+	print("="*60)
+	print("CLEANING DATA")
+	print("="*60)
+	
+	# Set default artificial missing rules if none provided
+	if artificial_missing_rules is None:
+		artificial_missing_rules = {'age': [0]}
+	
+	# ========== STEP 1: Missing Value Handling ==========
+	if handle_missing:
+		print("\n--- Step 1: Missing Value Handling ---")
+		
+		# 1a. Replace artificial missing values with NaN
+		# Some features use special values (like 0) to represent missing data
+		if artificial_missing_rules:
+			print(f"Replacing artificial missing values:")
+			for feature, values in artificial_missing_rules.items():
+				if feature in X_train.columns:
+					for val in values:
+						train_count = (X_train[feature] == val).sum()
+						test_count = (X_test[feature] == val).sum()
+						
+						if train_count > 0 or test_count > 0:
+							print(f"  {feature} = {val} → NaN (Train: {train_count}, Test: {test_count})")
+							# Replace artificial missing value with actual NaN
+							X_train[feature] = X_train[feature].replace(val, np.nan)
+							X_test[feature] = X_test[feature].replace(val, np.nan)
+		
+		# 1b. Add missing indicators if requested
+		# Creates binary features indicating whether a value was originally missing
+		# This preserves information: "missing" itself can be predictive!
+		if add_missing_indicators:
+			print("\nAdding missing indicators:")
+			for col in X_train.columns:
+				if X_train[col].isnull().sum() > 0:
+					indicator_name = f"{col}_was_missing"
+					# Create binary indicator: 1 if missing, 0 if present
+					X_train[indicator_name] = X_train[col].isnull().astype(int)
+					X_test[indicator_name] = X_test[col].isnull().astype(int)
+					print(f"  Added: {indicator_name}")
+		
+		# 1c. Impute missing values
+		# Separate numeric and categorical columns for different imputation strategies
+		numeric_cols = X_train.select_dtypes(include=[np.number]).columns.tolist()
+		categorical_cols = X_train.select_dtypes(include=['object', 'string']).columns.tolist()
+		
+		# Impute numeric features with median (more robust than mean)
+		if numeric_cols:
+			missing_numeric = [col for col in numeric_cols if X_train[col].isnull().sum() > 0]
+			if missing_numeric:
+				print(f"\nImputing {len(missing_numeric)} numeric features with median (fitted on train):")
+				for col in missing_numeric:
+					train_missing = X_train[col].isnull().sum()
+					test_missing = X_test[col].isnull().sum()
+					
+					# Calculate median ONLY on training data (prevent data leakage)
+					median_value = X_train[col].median()
+					
+					# Fill missing values in both train and test with training median
+					X_train[col] = X_train[col].fillna(median_value)
+					X_test[col] = X_test[col].fillna(median_value)
+					
+					print(f"  {col}: median={median_value:.2f} (Train NaN: {train_missing}, Test NaN: {test_missing})")
+		
+		# Impute categorical features with mode (most frequent category)
+		if categorical_cols:
+			missing_categorical = [col for col in categorical_cols if X_train[col].isnull().sum() > 0]
+			if missing_categorical:
+				print(f"\nImputing {len(missing_categorical)} categorical features with mode (fitted on train):")
+				for col in missing_categorical:
+					train_missing = X_train[col].isnull().sum()
+					test_missing = X_test[col].isnull().sum()
+					
+					# Calculate mode ONLY on training data
+					mode_value = X_train[col].mode()[0] if len(X_train[col].mode()) > 0 else 'unknown'
+					
+					# Fill missing values with training mode
+					X_train[col] = X_train[col].fillna(mode_value)
+					X_test[col] = X_test[col].fillna(mode_value)
+					
+					print(f"  {col}: mode={mode_value} (Train NaN: {train_missing}, Test NaN: {test_missing})")
+		
+		print("\n✓ Missing value handling complete")
+	
+	# ========== STEP 1.5: Recombine Binary Features ==========
+	# Convert binary one-hot features back to categorical
+	X_train, X_test = recombine_binary_features(X_train, X_test)
 
-    # Identify features for Target Encoding (high-cardinality features)
-    # Target Encoding is better for features with many categories because:
-    # 1. It creates comparable scales across features (all in "damage risk" units)
-    # 2. It avoids arbitrary orderings (Label 0 < Label 504 means nothing)
-    # 3. It provides direct predictive information (higher value = higher risk)
-    
-    geo_features = [col for col in X_train.columns if col.startswith('geo_level_')]
-    target_encode_features_list = geo_features.copy()
+	
+	# ========== STEP 2: Remove Uninformative Features ==========
+	print("\n--- Step 2: Uninformative Feature Removal ---")
+	# Features with only one unique value provide no information for prediction
+	uninformative = [col for col in X_train.columns if X_train[col].nunique() == 1]
+	
+	if uninformative:
+		print(f"Removing {len(uninformative)} uninformative features")
+		X_train = X_train.drop(columns=uninformative)
+		X_test = X_test.drop(columns=uninformative)
+	else:
+		print("No uninformative features found")
+	
+	# ========== STEP 3: Encode Categorical Features ==========
+	print("\n--- Step 3: Categorical Encoding ---")
+	# Identify all categorical columns (including binned features with category dtype!)
+	categorical_cols = X_train.select_dtypes(include=['object', 'string', 'category']).columns.tolist()
 
-    # Add recombined features to Target Encoding list
-    # These have many categories (505 and 18 respectively)
-    if 'superstructure_type' in categorical_cols:
-        target_encode_features_list.append('superstructure_type')
-    if 'secondary_use_type' in categorical_cols:
-        target_encode_features_list.append('secondary_use_type')
+	# Identify features for Target Encoding (high-cardinality features)
+	# Target Encoding is better for features with many categories because:
+	# 1. It creates comparable scales across features (all in "damage risk" units)
+	# 2. It avoids arbitrary orderings (Label 0 < Label 504 means nothing)
+	# 3. It provides direct predictive information (higher value = higher risk)
+	
+	geo_features = [col for col in X_train.columns if col.startswith('geo_level_')]
+	target_encode_features_list = geo_features.copy()
 
-    # Remaining categorical features use Label Encoding
-    # These typically have fewer categories (<10), making Label Encoding acceptable
-    other_categorical = [col for col in categorical_cols 
-                         if col not in target_encode_features_list]
+	# Add recombined features to Target Encoding list
+	# These have many categories (505 and 18 respectively)
+	if 'superstructure_type' in categorical_cols:
+		target_encode_features_list.append('superstructure_type')
+	if 'secondary_use_type' in categorical_cols:
+		target_encode_features_list.append('secondary_use_type')
 
-    print(f"Features for Target Encoding ({len(target_encode_features_list)}): {target_encode_features_list}")
-    print(f"Features for Label Encoding ({len(other_categorical)}): {other_categorical}")
-    
-    # Apply Label Encoding to low-cardinality features
-    if other_categorical:
-        print(f"Label Encoding {len(other_categorical)} categorical features")
-        encoders = {}
-        
-        for col in other_categorical:
-            encoder = LabelEncoder()
-            # Fit encoder on training data only
-            encoder.fit(X_train[col].astype(str))
-            encoders[col] = encoder
-            
-            # Transform training data
-            X_train[col] = encoder.transform(X_train[col].astype(str))
-            
-            # Handle unseen categories in test set
-            # Map known categories, assign -1 to unknown ones
-            test_col_str = X_test[col].astype(str)
-            class_to_int = {cls: i for i, cls in enumerate(encoder.classes_)}
-            X_test[col] = test_col_str.map(lambda x: class_to_int.get(x, -1))
-    
-    # ========== NEW: Create Feature Combinations ==========
-    print("\n--- Step 3.5: Feature Combinations ---")
-    X_train, X_test = create_feature_combinations(X_train, y_train, X_test, smoothing=10)
+	# Remaining categorical features use Label Encoding
+	# These typically have fewer categories (<10), making Label Encoding acceptable
+	other_categorical = [col for col in categorical_cols 
+	                     if col not in target_encode_features_list]
 
-    # Apply Target Encoding to high-cardinality features
-    if target_encode_features_list:
-        X_train, X_test = target_encode_features(X_train, y_train, X_test, 
-                                                  target_encode_features_list, smoothing=10)
-    
-    # ========== STEP 4: Remove Highly Correlated Features ==========
-    print("\n--- Step 4: Highly Correlated Feature Removal ---")
-    # Calculate Pearson correlation matrix on TRAINING data only
-    corr_matrix = X_train.corr().abs()
-    
-    # Get upper triangle of correlation matrix (avoid checking both A-B and B-A)
-    upper_tri = corr_matrix.where(
-        np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)
-    )
-    
-    # Find features with correlation > threshold
-    # High correlation indicates redundancy - one feature can be removed
-    to_drop = [
-        column for column in upper_tri.columns 
-        if any(upper_tri[column] > correlation_threshold)
-    ]
-    
-    if to_drop:
-        print(f"Removing {len(to_drop)} highly correlated features (threshold={correlation_threshold}):")
-        # Show which pairs were correlated for transparency
-        for col in to_drop:
-            correlations = upper_tri[col][upper_tri[col] > correlation_threshold]
-            for corr_col, corr_val in correlations.items():
-                print(f"  - {col} <-> {corr_col}: {corr_val:.3f}")
-        
-        # Remove correlated features
-        X_train = X_train.drop(columns=to_drop)
-        X_test = X_test.drop(columns=to_drop)
-    else:
-        print(f"No highly correlated features found (threshold={correlation_threshold})")
-    
-    print("="*60 + "\n")
-    
-    return X_train, X_test
-
+	print(f"Features for Target Encoding ({len(target_encode_features_list)}): {target_encode_features_list}")
+	print(f"Features for Label Encoding ({len(other_categorical)}): {other_categorical}")
+	
+	# Apply Label Encoding to low-cardinality features
+	if other_categorical:
+		print(f"Label Encoding {len(other_categorical)} categorical features")
+		encoders = {}
+		
+		for col in other_categorical:
+			encoder = LabelEncoder()
+			# Fit encoder on training data only
+			encoder.fit(X_train[col].astype(str))
+			encoders[col] = encoder
+			
+			# Transform training data
+			X_train[col] = encoder.transform(X_train[col].astype(str))
+			
+			# Handle unseen categories in test set
+			# Map known categories, assign -1 to unknown ones
+			test_col_str = X_test[col].astype(str)
+			class_to_int = {cls: i for i, cls in enumerate(encoder.classes_)}
+			X_test[col] = test_col_str.map(lambda x: class_to_int.get(x, -1))
+	
+	# Apply Target Encoding to high-cardinality features
+	if target_encode_features_list:
+		X_train, X_test = target_encode_features(X_train, y_train, X_test, 
+		                                          target_encode_features_list, smoothing=10)
+	
+	# ========== STEP 4: Remove Highly Correlated Features ==========
+	print("\n--- Step 4: Highly Correlated Feature Removal ---")
+	# Calculate Pearson correlation matrix on TRAINING data only
+	# NOW all features are numeric (encoded), so correlation works!
+	corr_matrix = X_train.corr().abs()
+	
+	# Get upper triangle of correlation matrix (avoid checking both A-B and B-A)
+	upper_tri = corr_matrix.where(
+		np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)
+	)
+	
+	# Find features with correlation > threshold
+	# High correlation indicates redundancy - one feature can be removed
+	to_drop = [
+		column for column in upper_tri.columns 
+		if any(upper_tri[column] > correlation_threshold)
+	]
+	
+	if to_drop:
+		print(f"Removing {len(to_drop)} highly correlated features (threshold={correlation_threshold}):")
+		# Show which pairs were correlated for transparency
+		for col in to_drop:
+			correlations = upper_tri[col][upper_tri[col] > correlation_threshold]
+			for corr_col, corr_val in correlations.items():
+				print(f"  - {col} <-> {corr_col}: {corr_val:.3f}")
+		
+		# Remove correlated features
+		X_train = X_train.drop(columns=to_drop)
+		X_test = X_test.drop(columns=to_drop)
+	else:
+		print(f"No highly correlated features found (threshold={correlation_threshold})")
+	
+	print("="*60 + "\n")
+	
+	return X_train, X_test
 
 def train_model(X_train, y_train):
     """
@@ -681,6 +621,55 @@ def save_submission(predictions, building_ids):
     print(f"Rows: {len(submission):,}")
     print("="*60 + "\n")
 
+def analyze_feature_importance(model, feature_names, top_n=15):
+    """
+    Analyze and display feature importance from trained model.
+    
+    Helps identify:
+    - Most predictive features
+    - Zero-importance features (candidates for removal)
+    - Which engineered features are useful
+    """
+    print("\n" + "="*60)
+    print("FEATURE IMPORTANCE ANALYSIS")
+    print("="*60)
+    
+    # Get feature importances
+    importances = model.feature_importances_
+    
+    # Create DataFrame for easier sorting
+    feature_importance_df = pd.DataFrame({
+        'feature': feature_names,
+        'importance': importances
+    }).sort_values('importance', ascending=False)
+    
+    # Display top N features
+    print(f"\nTop {top_n} Most Important Features:")
+    print("-" * 60)
+    for idx, row in feature_importance_df.head(top_n).iterrows():
+        print(f"  {row['feature']:.<45} {row['importance']:.6f}")
+    
+    # Find zero-importance features
+    zero_importance = feature_importance_df[feature_importance_df['importance'] == 0]
+    if len(zero_importance) > 0:
+        print(f"\n⚠ Found {len(zero_importance)} zero-importance features:")
+        for feat in zero_importance['feature'].values[:10]:  # Show max 10
+            print(f"  - {feat}")
+        if len(zero_importance) > 10:
+            print(f"  ... and {len(zero_importance) - 10} more")
+    else:
+        print("\n✓ No zero-importance features found")
+    
+    # Summary statistics
+    print(f"\nSummary:")
+    print(f"  Total features: {len(feature_names)}")
+    print(f"  Non-zero importance: {(importances > 0).sum()}")
+    print(f"  Top 5 cumulative importance: {feature_importance_df.head(5)['importance'].sum():.2%}")
+    print(f"  Top 10 cumulative importance: {feature_importance_df.head(10)['importance'].sum():.2%}")
+    
+    print("="*60 + "\n")
+    
+    return feature_importance_df
 
 def main():
     """
@@ -721,6 +710,8 @@ def main():
     # 4. Train final model on full training set
     model = train_model(X_train, y_train)
     
+    # NEW: Analyze feature importance
+    feature_importance_df = analyze_feature_importance(model, X_train.columns.tolist(), top_n=15)
     # 5. Generate predictions on test set
     predictions = make_predictions(model, X_test)
     
@@ -738,14 +729,7 @@ def main():
     print("="*60 + "\n")
     
     print("PIPELINE COMPLETE!\n")
-    import pandas as pd
 
-    # Berechne Korrelation jedes Features mit damage_grade
-    feature_target_corr = X_train.corrwith(y_train).abs().sort_values(ascending=False)
-
-    # Features mit hoher Target-Korrelation sind Kandidaten
-    top_features = feature_target_corr.head(10)
-    print(top_features)
 
 if __name__ == '__main__':
     main()
