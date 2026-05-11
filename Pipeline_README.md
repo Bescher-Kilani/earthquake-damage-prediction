@@ -1,10 +1,7 @@
-```markdown
----
 
 ## Project Structure
 
-```
-
+```text
 TASK-1/
 ├── data/
 │   ├── train_values.csv
@@ -24,8 +21,7 @@ TASK-1/
 ├── pipeline_readme.md
 ├── README.md
 └── requirements.txt
-
-````
+```
 
 ---
 
@@ -37,7 +33,7 @@ pip install -r requirements.txt
 
 # Create data folder
 mkdir -p data
-````
+```
 
 **Note:** Place CSV files in `data/` folder before running.
 
@@ -57,7 +53,6 @@ python src/pipeline.py
 
 1. **Load data** from `data/` folder
 2. **Clean & engineer features:**
-
    * Handle missing values (age=0 → NaN → median)
    * **Create missing indicators** (age_was_missing)
    * **Recombine binary features** (11 binary → 1 categorical)
@@ -166,8 +161,7 @@ age_binned: 0.0026    vs    age: 0.0056 (original better!)
 
 ## Feature Importance (Top 15)
 
-```
-
+```text
 1.  geo_level_3_id_target_enc.................... 0.851577  <-- Dominant
 2.  superstructure_type_target_enc............... 0.064094
 3.  age_was_missing.............................. 0.014762
@@ -183,7 +177,6 @@ age_binned: 0.0026    vs    age: 0.0056 (original better!)
 13. slenderness.................................. 0.001886
 14. count_floors_pre_eq.......................... 0.000942
 15. height_per_floor............................. 0.000858
-
 ```
 
 ---
@@ -223,6 +216,3 @@ building_id,damage_grade
 ```
 
 ---
-
-```
-```
