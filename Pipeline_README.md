@@ -54,12 +54,22 @@ python src/pipeline.py
 1. **Load data** from `data/` folder
 2. **Clean & engineer features:**
    * Handle missing values (age=0 → NaN → median)
+3. **Feature Engineering:**
    * **Create missing indicators** (age_was_missing)
    * **Recombine binary features** (11 binary → 1 categorical)
    * Remove uninformative features
    * **Target Encoding** for high-cardinality (geo_levels, superstructure)
    * **Label Encoding** for low-cardinality (foundation_type, roof_type, etc.)
    * Remove highly correlated features (threshold=0.9)
+   * **Height Per Floor Feature:** = height_percentage / count_floors_pre_eq
+   * **Slenderness Feature** = height_percentage / area_percentage
+   * **Age Group:** age is bucketed into 
+      * New: [0, 10]
+      * Medium: [10, 30]
+      * Old: [30, 60]
+      * Very old:  [60, 1000].
+   * **Ground Height Feature:** = Ground Type + ‘_’ + height_percentage
+   * **Rare Category Grouping:** Replacing categories with count below RARE_CATEGORY_THRESHOLD with OTHER.
 3. **Train** Decision Tree classifier (max_depth=10)
 4. **Analyze** feature importance
 5. **Predict** on test set
@@ -87,7 +97,7 @@ python src/pipeline.py
 
 ## What Worked
 
-### **1. Missing Value Indicators** (+6.03% MCC)
+### **1. Missing Value Indicators** 
 
 ```python
 age_was_missing = age.isnull()
@@ -96,7 +106,7 @@ age_was_missing = age.isnull()
 * Preserves information: "missingness" is predictive
 * Became 3rd most important feature (1.49%)
 
-### **2. Binary Feature Recombination** (+2.43% MCC)
+### **2. Binary Feature Recombination** 
 
 ```python
 # 11 binary → 1 categorical with 505 combinations
@@ -106,7 +116,7 @@ has_superstructure_* → superstructure_type
 * Reduced dimensionality
 * Enabled effective Target Encoding
 
-### **3. Target Encoding** (+2.80% MCC combined)
+### **3. Target Encoding**
 
 ```python
 # For geo_levels + recombined features
@@ -116,10 +126,6 @@ superstructure_type → superstructure_type_target_enc
 
 * Replaced arbitrary IDs with meaningful risk values
 * geo_level_3: 85.16% feature importance!
-
-### **4. Correlation Threshold = 0.9** (+0.67% MCC)
-
-* Preserved hierarchical geo_level features
 
 ### **5. Additional Engineered Features**
 

@@ -69,10 +69,6 @@ def split_data(X_train, y_train, test_size=0.2, random_state=42):
     """
     Split training data into train and validation subsets.
 
-    IMPORTANT: This must be called BEFORE clean_data and feature_engineer
-    to prevent data leakage. Cleaning and encoding decisions must be made
-    only on X_tr (the training fold), then applied to X_val separately.
-
     Args:
         X_train: Full training features
         y_train: Full training labels
@@ -109,10 +105,6 @@ def split_data(X_train, y_train, test_size=0.2, random_state=42):
 def recombine_binary_features(X_train, X_test=None, X_val=None):
     """
     Recombine binary one-hot encoded features into categorical features.
-
-    This is feature engineering, not cleaning. The mapping is learned from the
-    training columns, then applied consistently to validation/test data when
-    those datasets are provided.
 
     Args:
         X_train: Training features.
