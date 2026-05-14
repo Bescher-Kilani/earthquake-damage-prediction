@@ -1205,6 +1205,10 @@ def analyze_feature_importance(pipeline, top_n=15):
     feature_names = col_aligner.train_columns_
     importances   = classifier.feature_importances_
 
+    # Normalize to [0, 1] so cumulative % is always meaningful,
+    # regardless of whether the model returns counts (LightGBM) or ratios (RF)
+    importances = importances / importances.sum()
+
     df = pd.DataFrame({
         'feature': feature_names,
         'importance': importances
