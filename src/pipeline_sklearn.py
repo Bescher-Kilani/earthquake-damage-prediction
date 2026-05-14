@@ -1,6 +1,6 @@
 """
 Earthquake Damage Prediction Pipeline
-Week 03: Feature Engineering — sklearn Pipeline Edition
+Week 04: Feature Engineering — sklearn Pipeline Edition + Model Comparison
 
 All logic from pipeline.py is preserved; it is now wrapped in
 sklearn-compatible transformers (BaseEstimator + TransformerMixin).
@@ -19,6 +19,10 @@ Pipeline Steps:
 5. Train Decision Tree classifier
 6. Generate predictions on test set
 7. Save submission file in competition format
+
+NEW Week 04:
+   - compare_models(): vergleicht Decision Tree, kNN, Logistic Regression,
+     Naive Bayes, SVM auf dem gleichen preprocessed Dataset
 """
 
 import pandas as pd
@@ -28,9 +32,19 @@ from pathlib import Path
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.model_selection import KFold, train_test_split
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.metrics import matthews_corrcoef, accuracy_score
+
+# ── NEU Week 04: Modelle für Vergleich ──────────────────────────────────────
+import time
+import warnings
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.naive_bayes import GaussianNB
+from sklearn.svm import LinearSVC
+
+warnings.filterwarnings('ignore')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -665,6 +679,9 @@ def build_pipeline(
     smoothing=10,
     n_splits=5,
     random_state=42,
+
+    # NEW Week 04: welcher Classifier soll genutzt werden
+    classifier=None,
 ):
     """
     Builds the full sklearn Pipeline from preprocessing +
@@ -672,10 +689,24 @@ def build_pipeline(
 
     Note: OOFTargetMeanEncoder requires y at fit() time — since sklearn
     pipelines pass y through to every step, this works transparently.
+
+    Parameters
+    ----------
+    classifier : sklearn estimator, optional
+        Wenn None → wird DecisionTreeClassifier mit Default-Params genutzt.
+        Kann mit jedem sklearn-kompatiblen Classifier überschrieben werden.
     """
 
     if artificial_missing_rules is None:
         artificial_missing_rules = {'age': [0]}
+
+    if classifier is None:
+        classifier = DecisionTreeClassifier(
+            random_state=42,
+            max_depth=10,
+            min_samples_split=100,
+            min_samples_leaf=50
+        )
 
     steps = [
         # ── Cleaning ─────────────────────────────────────────────────────────
@@ -709,14 +740,210 @@ def build_pipeline(
         ('col_aligner',       ColumnAligner()),
 
         # ── Classifier ───────────────────────────────────────────────────────
-        ('classifier',        DecisionTreeClassifier(
-                                  random_state=42,
-                                  max_depth=10,
-                                  min_samples_split=100,
-                                  min_samples_leaf=50)),
+        ('classifier',        classifier),
     ]
 
     return Pipeline(steps)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW Week 04: compare_models()
+# Vergleicht Decision Tree, kNN, Logistic Regression, Naive Bayes, SVM
+# auf dem gleichen preprocessed Dataset
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_models_for_comparison():
+    """
+    Gibt alle Vergleichsmodelle zurück.
+    Tuple: (classifier, needs_scaling)
+    needs_scaling=True → StandardScaler wird vor dem Classifier geschaltet.
+    """
+    return {
+        'Decision Tree': (
+            DecisionTreeClassifier(
+                random_state=42,
+                max_depth=10,
+                min_samples_split=100,
+                min_samples_leaf=50
+            ),
+            False   # Bäume brauchen kein Scaling
+        ),
+        'k-Nearest Neighbors': (
+            KNeighborsClassifier(
+                n_neighbors=10,
+                metric='euclidean',
+                n_jobs=-1
+            ),
+            True    # kNN ist sehr sensitiv auf Feature-Skalen
+        ),
+        'Logistic Regression': (
+            LogisticRegression(
+                max_iter=1000,
+                random_state=42,
+                n_jobs=-1,
+                C=1.0
+            ),
+            True    # braucht skalierte Features
+        ),
+        'Naive Bayes': (
+            GaussianNB(),
+            False   # GaussianNB ist scale-invariant
+        ),
+        'SVM (Linear)': (
+            LinearSVC(
+                max_iter=2000,
+                random_state=42,
+                C=1.0
+            ),
+            True    # SVM braucht zwingend Scaling
+        ),
+    }
+
+
+def compare_models(X_train, y_train, X_val, y_val,
+                   pipeline_kwargs=None, sample_size=None):
+    """
+    Preprocesst die Daten einmal mit der bestehenden Pipeline,
+    dann werden alle Modelle auf den gleichen Features verglichen.
+
+    Parameters
+    ----------
+    X_train, y_train : Trainingsdaten (roh, vor Preprocessing)
+    X_val, y_val     : Validierungsdaten (roh, vor Preprocessing)
+    pipeline_kwargs  : dict, optional — Pipeline-Konfiguration (gleiche Keys
+                       wie build_pipeline). Wenn None → Default-Config.
+    sample_size      : int, optional — nur N Trainingsamples nutzen
+                       (z.B. 20000 für schnellen Test)
+
+    Returns
+    -------
+    pd.DataFrame mit MCC, Accuracy, Trainingszeit pro Modell
+    """
+
+    if pipeline_kwargs is None:
+        pipeline_kwargs = dict(
+            correlation_threshold=0.9,
+            handle_missing=True,
+            artificial_missing_rules={'age': [0]},
+            add_missing_indicators=True,
+            USE_RECOMBINE_BINARY=True,
+            USE_HEIGHT_PER_FLOOR=True,
+            USE_SLENDERNESS=True,
+            USE_AGE_GROUP=True,
+            USE_GROUND_HEIGHT_RAW=False,
+            USE_GROUND_HEIGHT_BINNED=True,
+            USE_GEO2_AVG_AGE=False,
+            USE_GEO2_TARGET_MEAN=False,
+            USE_GEO3_TARGET_MEAN=False,
+            USE_RARE_CATEGORY_GROUPING=True,
+            RARE_CATEGORY_THRESHOLD=50,
+            USE_TARGET_ENCODING=True,
+            DROP_ORIGINAL_FEATURES=False,
+            smoothing=10,
+            n_splits=5,
+            random_state=42,
+        )
+
+    # Optionale Stichprobe
+    if sample_size is not None:
+        idx = np.random.choice(len(X_train), size=min(sample_size, len(X_train)), replace=False)
+        X_train_s = X_train.iloc[idx]
+        y_train_s = y_train.iloc[idx]
+        print(f"  (Stichprobe: {len(X_train_s):,} von {len(X_train):,} Trainingssamples)")
+    else:
+        X_train_s = X_train
+        y_train_s = y_train
+
+    # ── Preprocessing einmal fitten (kein Classifier in der Pipe) ────────────
+    print("\n" + "="*60)
+    print("PREPROCESSING (einmalig für alle Modelle)")
+    print("="*60)
+
+    # build_pipeline ohne Classifier → wir ersetzen ihn mit einem Dummy
+    from sklearn.dummy import DummyClassifier
+    preproc_kwargs = {k: v for k, v in pipeline_kwargs.items()}
+    preproc_pipeline = build_pipeline(**preproc_kwargs, classifier=DummyClassifier())
+
+    # Nur die Preprocessing-Steps fitten (bis col_aligner)
+    print("  Fitting preprocessor auf Trainingsdaten...")
+    t0 = time.time()
+
+    # Preprocessing-Steps einzeln ausführen um X_train_proc zu bekommen
+    preproc_steps = Pipeline(preproc_pipeline.steps[:-1])  # alle außer classifier
+    X_train_proc = preproc_steps.fit_transform(X_train_s, y_train_s)
+    X_val_proc   = preproc_steps.transform(X_val)
+
+    print(f"  Fertig in {time.time()-t0:.1f}s | Features nach Preprocessing: {X_train_proc.shape[1]}")
+
+    # Sicherstellen dass alles numerisch ist
+    X_train_proc = np.nan_to_num(X_train_proc.astype(float))
+    X_val_proc   = np.nan_to_num(X_val_proc.astype(float))
+
+    # StandardScaler einmal fitten (für Modelle die Scaling brauchen)
+    scaler       = StandardScaler()
+    X_tr_scaled  = scaler.fit_transform(X_train_proc)
+    X_val_scaled = scaler.transform(X_val_proc)
+
+    # ── Modelle evaluieren ───────────────────────────────────────────────────
+    print("\n" + "="*60)
+    print("MODELLVERGLEICH")
+    print("="*60)
+
+    models  = get_models_for_comparison()
+    results = []
+
+    for name, (clf, needs_scaling) in models.items():
+        X_tr_  = X_tr_scaled  if needs_scaling else X_train_proc
+        X_val_ = X_val_scaled if needs_scaling else X_val_proc
+
+        print(f"\n  Training: {name} ...", end=' ', flush=True)
+        t0 = time.time()
+
+        try:
+            clf.fit(X_tr_, y_train_s)
+            train_time = time.time() - t0
+
+            y_pred = clf.predict(X_val_)
+            mcc    = matthews_corrcoef(y_val, y_pred)
+            acc    = accuracy_score(y_val, y_pred)
+
+            results.append({
+                'Modell':        name,
+                'MCC':           round(mcc, 4),
+                'Accuracy':      round(acc, 4),
+                'Trainingszeit': f"{train_time:.1f}s",
+                'Scaling':       'Ja' if needs_scaling else 'Nein',
+                'Status':        '✓'
+            })
+            print(f"MCC={mcc:.4f}  Acc={acc:.4f}  ({train_time:.1f}s)")
+
+        except Exception as e:
+            train_time = time.time() - t0
+            results.append({
+                'Modell':        name,
+                'MCC':           None,
+                'Accuracy':      None,
+                'Trainingszeit': f"{train_time:.1f}s",
+                'Scaling':       'Ja' if needs_scaling else 'Nein',
+                'Status':        f'FEHLER: {str(e)[:50]}'
+            })
+            print(f"FEHLER: {e}")
+
+    # ── Ergebnistabelle ──────────────────────────────────────────────────────
+    df = pd.DataFrame(results)
+    df_sorted = df.sort_values('MCC', ascending=False, na_position='last').reset_index(drop=True)
+    df_sorted.index += 1  # Ranking ab 1
+
+    print("\n\n" + "="*60)
+    print("ERGEBNISSE (sortiert nach MCC)")
+    print("="*60)
+    print(df_sorted.to_string())
+    print("="*60)
+    print(f"\nBestes Modell: {df_sorted.iloc[0]['Modell']}  "
+          f"(MCC={df_sorted.iloc[0]['MCC']})")
+    print("="*60 + "\n")
+
+    return df_sorted
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -848,6 +1075,16 @@ def save_submission(predictions, building_ids, path='outputs/Team2_prediction.cs
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description='Earthquake Pipeline Week 04')
+    parser.add_argument('--compare', action='store_true',
+                        help='Modellvergleich ausführen (Week 04)')
+    parser.add_argument('--sample', type=int, default=None,
+                        help='Nur N Samples für Modellvergleich (schneller Test)')
+    parser.add_argument('--no_val', action='store_true',
+                        help='Kein Validation-Split — direkt auf vollem Trainingsset trainieren')
+    args = parser.parse_args()
+
     print("\n" + "="*60)
     print("EARTHQUAKE DAMAGE PREDICTION PIPELINE (sklearn)")
     print("="*60 + "\n")
@@ -889,12 +1126,27 @@ def main():
         random_state=42,
     )
 
-    # ── Evaluation pipeline (train fold → val fold) ────────────────────────
-    print(">>> Preparing validation pipeline")
-    eval_pipeline = build_pipeline(**pipeline_kwargs)
-    eval_pipeline.fit(X_tr, y_tr)
+    # ── NEU Week 04: Modellvergleich ─────────────────────────────────────────
+    if args.compare:
+        print(">>> Modellvergleich (Week 04)")
+        comparison_results = compare_models(
+            X_tr, y_tr,
+            X_val, y_val,
+            pipeline_kwargs=pipeline_kwargs,
+            sample_size=args.sample
+        )
+        out_path = Path('outputs/model_comparison.csv')
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        comparison_results.to_csv(out_path, index=True)
+        print(f"Vergleich gespeichert: {out_path}")
+        return  # nur Vergleich, kein Submission-File
 
-    results = evaluate_model(eval_pipeline, X_val, y_val, metrics=['mcc', 'accuracy'])
+    # ── Evaluation pipeline (train fold → val fold) ────────────────────────
+    if not args.no_val:
+        print(">>> Preparing validation pipeline")
+        eval_pipeline = build_pipeline(**pipeline_kwargs)
+        eval_pipeline.fit(X_tr, y_tr)
+        results = evaluate_model(eval_pipeline, X_val, y_val, metrics=['mcc', 'accuracy'])
 
     # ── Final pipeline (full train → test) ────────────────────────────────
     print(">>> Training final pipeline on full training data")
@@ -917,13 +1169,14 @@ def main():
 
     save_submission(predictions, test_ids)
 
-    print("\n" + "="*60)
-    print("SUMMARY")
-    print("="*60)
-    print(f"MCC:      {results['mcc']:.4f}")
-    print(f"Accuracy: {results['accuracy']:.4f}")
-    print("\nSubmission file: outputs/Team2_prediction.csv")
-    print("="*60)
+    if not args.no_val:
+        print("\n" + "="*60)
+        print("SUMMARY")
+        print("="*60)
+        print(f"MCC:      {results['mcc']:.4f}")
+        print(f"Accuracy: {results['accuracy']:.4f}")
+        print("\nSubmission file: outputs/Team2_prediction.csv")
+        print("="*60)
     print("PIPELINE COMPLETE!\n")
 
 
