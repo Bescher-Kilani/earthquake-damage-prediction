@@ -1,6 +1,6 @@
 """
 Earthquake Damage Prediction Pipeline
-Week 04: Feature Engineering — sklearn Pipeline Edition + Model Comparison
+Week 04: Prediction Models — sklearn Pipeline Edition + Model Comparison
 
 All logic from pipeline.py is preserved; it is now wrapped in
 sklearn-compatible transformers (BaseEstimator + TransformerMixin).
@@ -16,13 +16,14 @@ Pipeline Steps:
 4. Feature Engineering:
    - Recombine binary features into categorical features
    - Target Encoding for high-cardinality features
-5. Train Decision Tree classifier
+5. Train classifier
 6. Generate predictions on test set
 7. Save submission file in competition format
 
 NEW Week 04:
-   - compare_models(): vergleicht Decision Tree, kNN, Logistic Regression,
-     Naive Bayes, SVM auf dem gleichen preprocessed Dataset
+   - compare_models(): compares Decision Tree, kNN, Logistic Regression,
+     Naive Bayes, SVM using cross-validation on X_trainval
+   - Primary metric: Accuracy (competition); secondary: MCC (course)
 """
 
 import pandas as pd
@@ -36,7 +37,7 @@ from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.metrics import matthews_corrcoef, accuracy_score
 
-# ── NEU Week 04: Modelle für Vergleich ──────────────────────────────────────
+# ── NEW Week 04: models for comparison ──────────────────────────────────────
 import time
 import warnings
 from sklearn.neighbors import KNeighborsClassifier
@@ -748,15 +749,16 @@ def build_pipeline(
 
 # ─────────────────────────────────────────────────────────────────────────────
 # NEW Week 04: compare_models()
-# Vergleicht Decision Tree, kNN, Logistic Regression, Naive Bayes, SVM
-# auf dem gleichen preprocessed Dataset
+# Compares Decision Tree, kNN, Logistic Regression, Naive Bayes, SVM
+# using cross-validation on X_trainval.
+# Primary metric: Accuracy (competition); secondary: MCC (course)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_models_for_comparison():
     """
-    Gibt alle Vergleichsmodelle zurück.
+    Returns all comparison models as a dict.
     Tuple: (classifier, needs_scaling)
-    needs_scaling=True → StandardScaler wird vor dem Classifier geschaltet.
+    needs_scaling=True → StandardScaler is applied before the classifier.
     """
     return {
         'Decision Tree': (
@@ -766,7 +768,7 @@ def get_models_for_comparison():
                 min_samples_split=100,
                 min_samples_leaf=50
             ),
-            False   # Bäume brauchen kein Scaling
+            False   # tree-based models do not need scaling
         ),
         'k-Nearest Neighbors': (
             KNeighborsClassifier(
@@ -774,7 +776,7 @@ def get_models_for_comparison():
                 metric='euclidean',
                 n_jobs=-1
             ),
-            True    # kNN ist sehr sensitiv auf Feature-Skalen
+            True    # kNN is very sensitive to feature scales
         ),
         'Logistic Regression': (
             LogisticRegression(
@@ -783,11 +785,11 @@ def get_models_for_comparison():
                 n_jobs=-1,
                 C=1.0
             ),
-            True    # braucht skalierte Features
+            True    # needs scaled features to converge properly
         ),
         'Naive Bayes': (
             GaussianNB(),
-            False   # GaussianNB ist scale-invariant
+            False   # GaussianNB is scale-invariant
         ),
         'SVM (Linear)': (
             LinearSVC(
@@ -795,29 +797,41 @@ def get_models_for_comparison():
                 random_state=42,
                 C=1.0
             ),
-            True    # SVM braucht zwingend Scaling
+            True    # SVM requires scaling
         ),
     }
 
 
-def compare_models(X_train, y_train, X_val, y_val,
-                   pipeline_kwargs=None, sample_size=None):
+def _build_preproc_steps(pipeline_kwargs):
     """
-    Preprocesst die Daten einmal mit der bestehenden Pipeline,
-    dann werden alle Modelle auf den gleichen Features verglichen.
+    Builds the preprocessing-only pipeline (no classifier).
+    Used inside each CV fold to avoid leakage.
+    """
+    from sklearn.dummy import DummyClassifier
+    full_pipeline = build_pipeline(**pipeline_kwargs, classifier=DummyClassifier())
+    return Pipeline(full_pipeline.steps[:-1])  # drop the classifier step
+
+
+def compare_models(X_trainval, y_trainval,
+                   pipeline_kwargs=None, n_cv_splits=5, sample_size=None):
+    """
+    Runs cross-validation on the full training data for each model.
+
+    Data flow:
+        X_trainval (260k) → 5-Fold CV
+        Each fold: 208k train, 52k val → Score
+        → mean Accuracy and MCC across 5 folds
 
     Parameters
     ----------
-    X_train, y_train : Trainingsdaten (roh, vor Preprocessing)
-    X_val, y_val     : Validierungsdaten (roh, vor Preprocessing)
-    pipeline_kwargs  : dict, optional — Pipeline-Konfiguration (gleiche Keys
-                       wie build_pipeline). Wenn None → Default-Config.
-    sample_size      : int, optional — nur N Trainingsamples nutzen
-                       (z.B. 20000 für schnellen Test)
+    X_trainval, y_trainval : full training data (raw, before preprocessing)
+    pipeline_kwargs        : pipeline configuration dict
+    n_cv_splits            : number of CV folds (default: 5)
+    sample_size            : optional — use only N samples (faster testing)
 
     Returns
     -------
-    pd.DataFrame mit MCC, Accuracy, Trainingszeit pro Modell
+    pd.DataFrame with mean Accuracy, mean MCC, std, and training time per model
     """
 
     if pipeline_kwargs is None:
@@ -844,103 +858,107 @@ def compare_models(X_train, y_train, X_val, y_val,
             random_state=42,
         )
 
-    # Optionale Stichprobe
+    # Optional: subsample X_trainval for faster testing
     if sample_size is not None:
-        idx = np.random.choice(len(X_train), size=min(sample_size, len(X_train)), replace=False)
-        X_train_s = X_train.iloc[idx]
-        y_train_s = y_train.iloc[idx]
-        print(f"  (Stichprobe: {len(X_train_s):,} von {len(X_train):,} Trainingssamples)")
-    else:
-        X_train_s = X_train
-        y_train_s = y_train
-
-    # ── Preprocessing einmal fitten (kein Classifier in der Pipe) ────────────
-    print("\n" + "="*60)
-    print("PREPROCESSING (einmalig für alle Modelle)")
-    print("="*60)
-
-    # build_pipeline ohne Classifier → wir ersetzen ihn mit einem Dummy
-    from sklearn.dummy import DummyClassifier
-    preproc_kwargs = {k: v for k, v in pipeline_kwargs.items()}
-    preproc_pipeline = build_pipeline(**preproc_kwargs, classifier=DummyClassifier())
-
-    # Nur die Preprocessing-Steps fitten (bis col_aligner)
-    print("  Fitting preprocessor auf Trainingsdaten...")
-    t0 = time.time()
-
-    # Preprocessing-Steps einzeln ausführen um X_train_proc zu bekommen
-    preproc_steps = Pipeline(preproc_pipeline.steps[:-1])  # alle außer classifier
-    X_train_proc = preproc_steps.fit_transform(X_train_s, y_train_s)
-    X_val_proc   = preproc_steps.transform(X_val)
-
-    print(f"  Fertig in {time.time()-t0:.1f}s | Features nach Preprocessing: {X_train_proc.shape[1]}")
-
-    # Sicherstellen dass alles numerisch ist
-    X_train_proc = np.nan_to_num(X_train_proc.astype(float))
-    X_val_proc   = np.nan_to_num(X_val_proc.astype(float))
-
-    # StandardScaler einmal fitten (für Modelle die Scaling brauchen)
-    scaler       = StandardScaler()
-    X_tr_scaled  = scaler.fit_transform(X_train_proc)
-    X_val_scaled = scaler.transform(X_val_proc)
-
-    # ── Modelle evaluieren ───────────────────────────────────────────────────
-    print("\n" + "="*60)
-    print("MODELLVERGLEICH")
-    print("="*60)
+        idx = np.random.choice(len(X_trainval), size=min(sample_size, len(X_trainval)), replace=False)
+        X_trainval = X_trainval.iloc[idx]
+        y_trainval = y_trainval.iloc[idx]
+        print(f"  (Sample: {len(X_trainval):,} of total training samples)")
 
     models  = get_models_for_comparison()
     results = []
 
-    for name, (clf, needs_scaling) in models.items():
-        X_tr_  = X_tr_scaled  if needs_scaling else X_train_proc
-        X_val_ = X_val_scaled if needs_scaling else X_val_proc
+    kf = KFold(n_splits=n_cv_splits, shuffle=True, random_state=42)
 
-        print(f"\n  Training: {name} ...", end=' ', flush=True)
+    print("\n" + "="*60)
+    print(f"CROSS-VALIDATION ({n_cv_splits} folds on X_trainval)")
+    print("Primary metric: Accuracy | Secondary: MCC")
+    print("="*60)
+
+    for name, (clf, needs_scaling) in models.items():
+        print(f"\n  Model: {name}")
+        fold_acc  = []
+        fold_mcc  = []
         t0 = time.time()
 
         try:
-            clf.fit(X_tr_, y_train_s)
-            train_time = time.time() - t0
+            for fold_idx, (train_idx, val_idx) in enumerate(kf.split(X_trainval)):
+                # Split into fold train / fold val
+                X_fold_train = X_trainval.iloc[train_idx]
+                y_fold_train = y_trainval.iloc[train_idx]
+                X_fold_val   = X_trainval.iloc[val_idx]
+                y_fold_val   = y_trainval.iloc[val_idx]
 
-            y_pred = clf.predict(X_val_)
-            mcc    = matthews_corrcoef(y_val, y_pred)
-            acc    = accuracy_score(y_val, y_pred)
+                # Preprocessing: fit ONLY on fold train (no leakage)
+                preproc = _build_preproc_steps(pipeline_kwargs)
+                X_fold_train_proc = preproc.fit_transform(X_fold_train, y_fold_train)
+                X_fold_val_proc   = preproc.transform(X_fold_val)
+
+                # Ensure numeric
+                X_fold_train_proc = np.nan_to_num(X_fold_train_proc.astype(float))
+                X_fold_val_proc   = np.nan_to_num(X_fold_val_proc.astype(float))
+
+                # Apply scaling if needed
+                if needs_scaling:
+                    scaler = StandardScaler()
+                    X_fold_train_proc = scaler.fit_transform(X_fold_train_proc)
+                    X_fold_val_proc   = scaler.transform(X_fold_val_proc)
+
+                # Train and evaluate
+                clf_fold = type(clf)(**clf.get_params())  # fresh copy per fold
+                clf_fold.fit(X_fold_train_proc, y_fold_train)
+                y_pred = clf_fold.predict(X_fold_val_proc)
+
+                fold_acc.append(accuracy_score(y_fold_val, y_pred))
+                fold_mcc.append(matthews_corrcoef(y_fold_val, y_pred))
+
+                print(f"    Fold {fold_idx+1}/{n_cv_splits}  "
+                      f"Acc={fold_acc[-1]:.4f}  MCC={fold_mcc[-1]:.4f}")
+
+            train_time = time.time() - t0
+            mean_acc = np.mean(fold_acc)
+            std_acc  = np.std(fold_acc)
+            mean_mcc = np.mean(fold_mcc)
+            std_mcc  = np.std(fold_mcc)
+
+            print(f"  → Mean  Acc={mean_acc:.4f} ± {std_acc:.4f}  "
+                  f"MCC={mean_mcc:.4f} ± {std_mcc:.4f}  ({train_time:.1f}s total)")
 
             results.append({
-                'Modell':        name,
-                'MCC':           round(mcc, 4),
-                'Accuracy':      round(acc, 4),
-                'Trainingszeit': f"{train_time:.1f}s",
-                'Scaling':       'Ja' if needs_scaling else 'Nein',
+                'Model':         name,
+                'Acc (mean)':    round(mean_acc, 4),
+                'Acc (std)':     round(std_acc, 4),
+                'MCC (mean)':    round(mean_mcc, 4),
+                'MCC (std)':     round(std_mcc, 4),
+                'Time':          f"{train_time:.1f}s",
                 'Status':        '✓'
             })
-            print(f"MCC={mcc:.4f}  Acc={acc:.4f}  ({train_time:.1f}s)")
 
         except Exception as e:
             train_time = time.time() - t0
             results.append({
-                'Modell':        name,
-                'MCC':           None,
-                'Accuracy':      None,
-                'Trainingszeit': f"{train_time:.1f}s",
-                'Scaling':       'Ja' if needs_scaling else 'Nein',
-                'Status':        f'FEHLER: {str(e)[:50]}'
+                'Model':         name,
+                'Acc (mean)':    None,
+                'Acc (std)':     None,
+                'MCC (mean)':    None,
+                'MCC (std)':     None,
+                'Time':          f"{train_time:.1f}s",
+                'Status':        f'ERROR: {str(e)[:50]}'
             })
-            print(f"FEHLER: {e}")
+            print(f"  ERROR: {e}")
 
-    # ── Ergebnistabelle ──────────────────────────────────────────────────────
+    # Results table — sorted by Accuracy (primary metric)
     df = pd.DataFrame(results)
-    df_sorted = df.sort_values('MCC', ascending=False, na_position='last').reset_index(drop=True)
-    df_sorted.index += 1  # Ranking ab 1
+    df_sorted = df.sort_values('Acc (mean)', ascending=False, na_position='last').reset_index(drop=True)
+    df_sorted.index += 1  # rank from 1
 
     print("\n\n" + "="*60)
-    print("ERGEBNISSE (sortiert nach MCC)")
+    print("RESULTS — sorted by Accuracy (primary metric)")
     print("="*60)
     print(df_sorted.to_string())
     print("="*60)
-    print(f"\nBestes Modell: {df_sorted.iloc[0]['Modell']}  "
-          f"(MCC={df_sorted.iloc[0]['MCC']})")
+    print(f"\nBest model: {df_sorted.iloc[0]['Model']}  "
+          f"(Acc={df_sorted.iloc[0]['Acc (mean)']}  MCC={df_sorted.iloc[0]['MCC (mean)']})")
     print("="*60 + "\n")
 
     return df_sorted
@@ -1078,11 +1096,9 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description='Earthquake Pipeline Week 04')
     parser.add_argument('--compare', action='store_true',
-                        help='Modellvergleich ausführen (Week 04)')
+                        help='Run model comparison with cross-validation on full training data')
     parser.add_argument('--sample', type=int, default=None,
-                        help='Nur N Samples für Modellvergleich (schneller Test)')
-    parser.add_argument('--no_val', action='store_true',
-                        help='Kein Validation-Split — direkt auf vollem Trainingsset trainieren')
+                        help='Use only N samples for CV (faster testing, e.g. --sample 20000)')
     args = parser.parse_args()
 
     print("\n" + "="*60)
@@ -1091,23 +1107,15 @@ def main():
 
     np.random.seed(42)
 
-    # ── Load data ────────────────────────────────────────────────────────────
+    # ── Load data ─────────────────────────────────────────────────────────
     X_train_full, y_train_full, X_test, test_ids = load_data()
 
-    # ── Split BEFORE preprocessing (no leakage) ───────────────────────────────
-    X_tr, X_val, y_tr, y_val = split_data(
-        X_train_full, y_train_full, test_size=0.2, random_state=42
-    )
-
-    # ── Pipeline configuration ──────────────────────────────────────────────
+    # ── Pipeline configuration ─────────────────────────────────────────────
     pipeline_kwargs = dict(
-        # clean_data
         correlation_threshold=0.9,
         handle_missing=True,
         artificial_missing_rules={'age': [0]},
         add_missing_indicators=True,
-
-        # feature_engineer
         USE_RECOMBINE_BINARY=True,
         USE_HEIGHT_PER_FLOOR=True,
         USE_SLENDERNESS=True,
@@ -1126,30 +1134,25 @@ def main():
         random_state=42,
     )
 
-    # ── NEU Week 04: Modellvergleich ─────────────────────────────────────────
+    # ── --compare: cross-validation on full training data ─────────────────
+    # CV runs on all 260k → stable score, no data wasted
+    # After CV: train final model on all 260k → submission file
     if args.compare:
-        print(">>> Modellvergleich (Week 04)")
+        print(">>> Model Comparison — 5-Fold CV on full training data (260k)")
         comparison_results = compare_models(
-            X_tr, y_tr,
-            X_val, y_val,
+            X_train_full, y_train_full,
             pipeline_kwargs=pipeline_kwargs,
+            n_cv_splits=5,
             sample_size=args.sample
         )
         out_path = Path('outputs/model_comparison.csv')
         out_path.parent.mkdir(parents=True, exist_ok=True)
         comparison_results.to_csv(out_path, index=True)
-        print(f"Vergleich gespeichert: {out_path}")
-        return  # nur Vergleich, kein Submission-File
+        print(f"Results saved: {out_path}")
+        return
 
-    # ── Evaluation pipeline (train fold → val fold) ────────────────────────
-    if not args.no_val:
-        print(">>> Preparing validation pipeline")
-        eval_pipeline = build_pipeline(**pipeline_kwargs)
-        eval_pipeline.fit(X_tr, y_tr)
-        results = evaluate_model(eval_pipeline, X_val, y_val, metrics=['mcc', 'accuracy'])
-
-    # ── Final pipeline (full train → test) ────────────────────────────────
-    print(">>> Training final pipeline on full training data")
+    # ── normal run: train on full 260k → submission file ──────────────────
+    print(">>> Training final pipeline on full training data (260k)")
     final_pipeline = build_pipeline(**pipeline_kwargs)
     final_pipeline.fit(X_train_full, y_train_full)
 
@@ -1157,7 +1160,6 @@ def main():
 
     predictions = final_pipeline.predict(X_test)
 
-    # Vorhersage-Verteilung ausgeben
     print("="*60)
     print("PREDICTIONS")
     print("="*60)
@@ -1168,15 +1170,6 @@ def main():
     print("="*60 + "\n")
 
     save_submission(predictions, test_ids)
-
-    if not args.no_val:
-        print("\n" + "="*60)
-        print("SUMMARY")
-        print("="*60)
-        print(f"MCC:      {results['mcc']:.4f}")
-        print(f"Accuracy: {results['accuracy']:.4f}")
-        print("\nSubmission file: outputs/Team2_prediction.csv")
-        print("="*60)
     print("PIPELINE COMPLETE!\n")
 
 
