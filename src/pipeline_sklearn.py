@@ -44,6 +44,10 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.naive_bayes import GaussianNB
 from sklearn.svm import LinearSVC
+from sklearn.ensemble import RandomForestClassifier
+from lightgbm import LGBMClassifier
+from xgboost import XGBClassifier
+from catboost import CatBoostClassifier
 
 warnings.filterwarnings('ignore')
 
@@ -768,7 +772,49 @@ def get_models_for_comparison():
                 min_samples_split=100,
                 min_samples_leaf=50
             ),
-            False   # tree-based models do not need scaling
+            False
+        ),
+        'Random Forest': (
+            RandomForestClassifier(
+                n_estimators=200,
+                max_depth=15,
+                random_state=42,
+                n_jobs=-1
+            ),
+            False   # tree-based, no scaling needed
+        ),
+        'LightGBM': (
+            LGBMClassifier(
+                n_estimators=300,
+                learning_rate=0.05,
+                num_leaves=63,
+                random_state=42,
+                n_jobs=-1,
+                verbose=-1
+            ),
+            False   # handles raw features natively
+        ),
+        'XGBoost': (
+            XGBClassifier(
+                n_estimators=300,
+                learning_rate=0.05,
+                max_depth=6,
+                random_state=42,
+                n_jobs=-1,
+                eval_metric='mlogloss',
+                verbosity=0
+            ),
+            False
+        ),
+        'CatBoost': (
+            CatBoostClassifier(
+                iterations=300,
+                learning_rate=0.05,
+                depth=6,
+                random_seed=42,
+                verbose=0
+            ),
+            False   # CatBoost handles categoricals natively
         ),
         'k-Nearest Neighbors': (
             KNeighborsClassifier(
@@ -776,7 +822,7 @@ def get_models_for_comparison():
                 metric='euclidean',
                 n_jobs=-1
             ),
-            True    # kNN is very sensitive to feature scales
+            True
         ),
         'Logistic Regression': (
             LogisticRegression(
@@ -785,11 +831,11 @@ def get_models_for_comparison():
                 n_jobs=-1,
                 C=1.0
             ),
-            True    # needs scaled features to converge properly
+            True
         ),
         'Naive Bayes': (
             GaussianNB(),
-            False   # GaussianNB is scale-invariant
+            False
         ),
         'SVM (Linear)': (
             LinearSVC(
@@ -797,7 +843,7 @@ def get_models_for_comparison():
                 random_state=42,
                 C=1.0
             ),
-            True    # SVM requires scaling
+            True
         ),
     }
 
@@ -870,9 +916,14 @@ def compare_models_single_split(X_train, y_train, X_val, y_val,
         print(f"\n  Training: {name} ...", end=' ', flush=True)
         t0 = time.time()
         try:
-            clf.fit(X_tr_, y_train)
+            # XGBoost requires labels 0,1,2 — shift damage_grade 1,2,3 → 0,1,2
+            y_train_fit = y_train - 1 if isinstance(clf, XGBClassifier) else y_train
+            clf.fit(X_tr_, y_train_fit)
             train_time = time.time() - t0
             y_pred = clf.predict(X_val_)
+            # shift predictions back for XGBoost
+            if isinstance(clf, XGBClassifier):
+                y_pred = y_pred + 1
             acc = accuracy_score(y_val, y_pred)
             mcc = matthews_corrcoef(y_val, y_pred)
             results.append({
@@ -1003,8 +1054,12 @@ def compare_models(X_trainval, y_trainval,
 
                 # Train and evaluate
                 clf_fold = type(clf)(**clf.get_params())  # fresh copy per fold
-                clf_fold.fit(X_fold_train_proc, y_fold_train)
+                # XGBoost requires labels 0,1,2 — shift damage_grade 1,2,3 → 0,1,2
+                y_fold_train_fit = y_fold_train - 1 if isinstance(clf_fold, XGBClassifier) else y_fold_train
+                clf_fold.fit(X_fold_train_proc, y_fold_train_fit)
                 y_pred = clf_fold.predict(X_fold_val_proc)
+                if isinstance(clf_fold, XGBClassifier):
+                    y_pred = y_pred + 1
 
                 fold_acc.append(accuracy_score(y_fold_val, y_pred))
                 fold_mcc.append(matthews_corrcoef(y_fold_val, y_pred))
