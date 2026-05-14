@@ -812,6 +812,103 @@ def _build_preproc_steps(pipeline_kwargs):
     return Pipeline(full_pipeline.steps[:-1])  # drop the classifier step
 
 
+def compare_models_single_split(X_train, y_train, X_val, y_val,
+                                pipeline_kwargs=None, sample_size=None):
+    """
+    Compares models with a single train/val split (no CV).
+    Faster than CV but less reliable — use for quick exploration.
+
+    Parameters
+    ----------
+    X_train, y_train : training data (raw)
+    X_val, y_val     : validation data (raw)
+    pipeline_kwargs  : pipeline configuration dict
+    sample_size      : optional — use only N samples from X_train
+
+    Returns
+    -------
+    pd.DataFrame with Accuracy, MCC, and training time per model
+    """
+    if pipeline_kwargs is None:
+        pipeline_kwargs = {}
+
+    if sample_size is not None:
+        idx = np.random.choice(len(X_train), size=min(sample_size, len(X_train)), replace=False)
+        X_train = X_train.iloc[idx]
+        y_train = y_train.iloc[idx]
+        print(f"  (Sample: {len(X_train):,} training samples)")
+
+    # Preprocess once for all models
+    print("\n" + "="*60)
+    print("PREPROCESSING (once for all models)")
+    print("="*60)
+    preproc = _build_preproc_steps(pipeline_kwargs)
+    t0 = time.time()
+    X_train_proc = preproc.fit_transform(X_train, y_train)
+    X_val_proc   = preproc.transform(X_val)
+    print(f"  Done in {time.time()-t0:.1f}s | Features: {X_train_proc.shape[1]}")
+
+    X_train_proc = np.nan_to_num(X_train_proc.astype(float))
+    X_val_proc   = np.nan_to_num(X_val_proc.astype(float))
+
+    scaler       = StandardScaler()
+    X_tr_scaled  = scaler.fit_transform(X_train_proc)
+    X_val_scaled = scaler.transform(X_val_proc)
+
+    models  = get_models_for_comparison()
+    results = []
+
+    print("\n" + "="*60)
+    print("MODEL COMPARISON — single split")
+    print("Primary metric: Accuracy | Secondary: MCC")
+    print("="*60)
+
+    for name, (clf, needs_scaling) in models.items():
+        X_tr_  = X_tr_scaled  if needs_scaling else X_train_proc
+        X_val_ = X_val_scaled if needs_scaling else X_val_proc
+
+        print(f"\n  Training: {name} ...", end=' ', flush=True)
+        t0 = time.time()
+        try:
+            clf.fit(X_tr_, y_train)
+            train_time = time.time() - t0
+            y_pred = clf.predict(X_val_)
+            acc = accuracy_score(y_val, y_pred)
+            mcc = matthews_corrcoef(y_val, y_pred)
+            results.append({
+                'Model':   name,
+                'Acc':     round(acc, 4),
+                'MCC':     round(mcc, 4),
+                'Time':    f"{train_time:.1f}s",
+                'Status':  '✓'
+            })
+            print(f"Acc={acc:.4f}  MCC={mcc:.4f}  ({train_time:.1f}s)")
+        except Exception as e:
+            results.append({
+                'Model':  name,
+                'Acc':    None,
+                'MCC':    None,
+                'Time':   f"{time.time()-t0:.1f}s",
+                'Status': f'ERROR: {str(e)[:50]}'
+            })
+            print(f"ERROR: {e}")
+
+    df = pd.DataFrame(results)
+    df_sorted = df.sort_values('Acc', ascending=False, na_position='last').reset_index(drop=True)
+    df_sorted.index += 1
+
+    print("\n\n" + "="*60)
+    print("RESULTS — sorted by Accuracy")
+    print("="*60)
+    print(df_sorted.to_string())
+    print("="*60)
+    print(f"\nBest model: {df_sorted.iloc[0]['Model']}  "
+          f"(Acc={df_sorted.iloc[0]['Acc']}  MCC={df_sorted.iloc[0]['MCC']})")
+    print("="*60 + "\n")
+
+    return df_sorted
+
+
 def compare_models(X_trainval, y_trainval,
                    pipeline_kwargs=None, n_cv_splits=5, sample_size=None):
     """
@@ -1097,6 +1194,8 @@ def main():
     parser = argparse.ArgumentParser(description='Earthquake Pipeline Week 04')
     parser.add_argument('--compare', action='store_true',
                         help='Run model comparison with cross-validation on full training data')
+    parser.add_argument('--no-cv', action='store_true',
+                        help='Compare models with a single train/val split instead of CV (faster)')
     parser.add_argument('--sample', type=int, default=None,
                         help='Use only N samples for CV (faster testing, e.g. --sample 20000)')
     args = parser.parse_args()
@@ -1134,17 +1233,30 @@ def main():
         random_state=42,
     )
 
-    # ── --compare: cross-validation on full training data ─────────────────
-    # CV runs on all 260k → stable score, no data wasted
-    # After CV: train final model on all 260k → submission file
+    # ── --compare: model comparison ───────────────────────────────────────
     if args.compare:
-        print(">>> Model Comparison — 5-Fold CV on full training data (260k)")
-        comparison_results = compare_models(
-            X_train_full, y_train_full,
-            pipeline_kwargs=pipeline_kwargs,
-            n_cv_splits=5,
-            sample_size=args.sample
-        )
+        no_cv = getattr(args, 'no_cv', False)
+        if no_cv:
+            # Single train/val split — faster, less reliable
+            print(">>> Model Comparison — single train/val split (80/20)")
+            X_tr, X_val, y_tr, y_val = train_test_split(
+                X_train_full, y_train_full,
+                test_size=0.2, random_state=42, stratify=y_train_full
+            )
+            comparison_results = compare_models_single_split(
+                X_tr, y_tr, X_val, y_val,
+                pipeline_kwargs=pipeline_kwargs,
+                sample_size=args.sample
+            )
+        else:
+            # 5-Fold CV on full training data — recommended
+            print(">>> Model Comparison — 5-Fold CV on full training data (260k)")
+            comparison_results = compare_models(
+                X_train_full, y_train_full,
+                pipeline_kwargs=pipeline_kwargs,
+                n_cv_splits=5,
+                sample_size=args.sample
+            )
         out_path = Path('outputs/model_comparison.csv')
         out_path.parent.mkdir(parents=True, exist_ok=True)
         comparison_results.to_csv(out_path, index=True)
