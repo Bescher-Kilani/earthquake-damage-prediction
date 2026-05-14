@@ -859,7 +859,8 @@ def _build_preproc_steps(pipeline_kwargs):
 
 
 def compare_models_single_split(X_train, y_train, X_val, y_val,
-                                pipeline_kwargs=None, sample_size=None):
+                                pipeline_kwargs=None, sample_size=None,
+                                selected_models=None):
     """
     Compares models with a single train/val split (no CV).
     Faster than CV but less reliable — use for quick exploration.
@@ -902,6 +903,8 @@ def compare_models_single_split(X_train, y_train, X_val, y_val,
     X_val_scaled = scaler.transform(X_val_proc)
 
     models  = get_models_for_comparison()
+    if selected_models:
+        models = {k: v for k, v in models.items() if k in selected_models}
     results = []
 
     print("\n" + "="*60)
@@ -961,7 +964,8 @@ def compare_models_single_split(X_train, y_train, X_val, y_val,
 
 
 def compare_models(X_trainval, y_trainval,
-                   pipeline_kwargs=None, n_cv_splits=5, sample_size=None):
+                   pipeline_kwargs=None, n_cv_splits=5, sample_size=None,
+                   selected_models=None):
     """
     Runs cross-validation on the full training data for each model.
 
@@ -1014,6 +1018,8 @@ def compare_models(X_trainval, y_trainval,
         print(f"  (Sample: {len(X_trainval):,} of total training samples)")
 
     models  = get_models_for_comparison()
+    if selected_models:
+        models = {k: v for k, v in models.items() if k in selected_models}
     results = []
 
     kf = KFold(n_splits=n_cv_splits, shuffle=True, random_state=42)
@@ -1253,6 +1259,10 @@ def main():
                         help='Compare models with a single train/val split instead of CV (faster)')
     parser.add_argument('--sample', type=int, default=None,
                         help='Use only N samples for CV (faster testing, e.g. --sample 20000)')
+    parser.add_argument('--models', type=str, default=None,
+                        help='Comma-separated list of models to compare, e.g. --models "Decision Tree,Random Forest,LightGBM"'
+                             ' | Available: Decision Tree, Random Forest, LightGBM, XGBoost, CatBoost,'
+                             ' k-Nearest Neighbors, Logistic Regression, Naive Bayes, SVM (Linear)')
     args = parser.parse_args()
 
     print("\n" + "="*60)
@@ -1290,9 +1300,14 @@ def main():
 
     # ── --compare: model comparison ───────────────────────────────────────
     if args.compare:
+        # Parse --models filter
+        selected_models = None
+        if args.models:
+            selected_models = [m.strip() for m in args.models.split(',')]
+            print(f">>> Selected models: {selected_models}")
+
         no_cv = getattr(args, 'no_cv', False)
         if no_cv:
-            # Single train/val split — faster, less reliable
             print(">>> Model Comparison — single train/val split (80/20)")
             X_tr, X_val, y_tr, y_val = train_test_split(
                 X_train_full, y_train_full,
@@ -1301,16 +1316,17 @@ def main():
             comparison_results = compare_models_single_split(
                 X_tr, y_tr, X_val, y_val,
                 pipeline_kwargs=pipeline_kwargs,
-                sample_size=args.sample
+                sample_size=args.sample,
+                selected_models=selected_models
             )
         else:
-            # 5-Fold CV on full training data — recommended
             print(">>> Model Comparison — 5-Fold CV on full training data (260k)")
             comparison_results = compare_models(
                 X_train_full, y_train_full,
                 pipeline_kwargs=pipeline_kwargs,
                 n_cv_splits=5,
-                sample_size=args.sample
+                sample_size=args.sample,
+                selected_models=selected_models
             )
         out_path = Path('outputs/model_comparison.csv')
         out_path.parent.mkdir(parents=True, exist_ok=True)
