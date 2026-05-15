@@ -706,11 +706,12 @@ def build_pipeline(
         artificial_missing_rules = {'age': [0]}
 
     if classifier is None:
-        classifier = DecisionTreeClassifier(
+        # Default: Random Forest — best Accuracy (0.7411) in Week 04 model comparison
+        classifier = RandomForestClassifier(
+            n_estimators=200,
+            max_depth=15,
             random_state=42,
-            max_depth=10,
-            min_samples_split=100,
-            min_samples_leaf=50
+            n_jobs=-1
         )
 
     steps = [
@@ -1205,10 +1206,6 @@ def analyze_feature_importance(pipeline, top_n=15):
     feature_names = col_aligner.train_columns_
     importances   = classifier.feature_importances_
 
-    # Normalize to [0, 1] so cumulative % is always meaningful,
-    # regardless of whether the model returns counts (LightGBM) or ratios (RF)
-    importances = importances / importances.sum()
-
     df = pd.DataFrame({
         'feature': feature_names,
         'importance': importances
@@ -1251,6 +1248,151 @@ def save_submission(predictions, building_ids, path='outputs/Team2_prediction.cs
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# analyze_errors()
+# Deep error analysis for the 4 ensemble models (RF, LGBM, XGB, CatBoost)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def analyze_errors(X_train_full, y_train_full, pipeline_kwargs, sample_size=None):
+    from sklearn.metrics import confusion_matrix, classification_report
+
+    ENSEMBLE_MODELS = ['Random Forest', 'LightGBM', 'XGBoost', 'CatBoost']
+
+    if sample_size is not None:
+        idx = np.random.choice(len(X_train_full), size=min(sample_size, len(X_train_full)), replace=False)
+        X_train_full = X_train_full.iloc[idx]
+        y_train_full = y_train_full.iloc[idx]
+        print(f"  (Sample mode: {len(X_train_full):,} samples)")
+
+    X_tr, X_val, y_tr, y_val = train_test_split(
+        X_train_full, y_train_full, test_size=0.2, random_state=42, stratify=y_train_full
+    )
+    print(f"  Train: {len(X_tr):,}  |  Val: {len(X_val):,}\n")
+
+    print("PREPROCESSING (once for all models)")
+    preproc = _build_preproc_steps(pipeline_kwargs)
+    t0 = time.time()
+    X_tr_proc  = preproc.fit_transform(X_tr, y_tr)
+    X_val_proc = preproc.transform(X_val)
+    print(f"  Done in {time.time()-t0:.1f}s | Features: {X_tr_proc.shape[1]}")
+
+    col_aligner   = preproc.named_steps.get('col_aligner')
+    feature_names = (col_aligner.train_columns_ if col_aligner is not None
+                     else [f"f{i}" for i in range(X_tr_proc.shape[1])])
+
+    X_tr_proc  = np.nan_to_num(X_tr_proc.astype(float))
+    X_val_proc = np.nan_to_num(X_val_proc.astype(float))
+
+    all_models    = get_models_for_comparison()
+    ensemble_clfs = {k: v[0] for k, v in all_models.items() if k in ENSEMBLE_MODELS}
+    predictions   = {}
+    importances   = {}
+
+    print("\nTRAINING ENSEMBLE MODELS")
+    for name, clf in ensemble_clfs.items():
+        print(f"  {name} ...", end=' ', flush=True)
+        t0 = time.time()
+        y_tr_fit = y_tr - 1 if isinstance(clf, XGBClassifier) else y_tr
+        clf.fit(X_tr_proc, y_tr_fit)
+        y_pred = clf.predict(X_val_proc)
+        if isinstance(clf, XGBClassifier):
+            y_pred = y_pred + 1
+        y_pred = np.asarray(y_pred).ravel()
+        acc = accuracy_score(y_val, y_pred)
+        mcc = matthews_corrcoef(y_val, y_pred)
+        print(f"Acc={acc:.4f}  MCC={mcc:.4f}  ({time.time()-t0:.1f}s)")
+        predictions[name] = y_pred
+        if hasattr(clf, 'feature_importances_'):
+            importances[name] = clf.feature_importances_
+
+    # STEP 1: Confusion Matrix + Per-Class Metrics
+    print("\nSTEP 1: CONFUSION MATRIX + PER-CLASS METRICS")
+    for name, y_pred in predictions.items():
+        print(f"\n  {name}")
+        cm = confusion_matrix(y_val, y_pred, labels=[1, 2, 3])
+        print("  Confusion Matrix (rows=true, cols=predicted):")
+        print(f"  {'':12} Pred 1   Pred 2   Pred 3")
+        for i, g in enumerate([1, 2, 3]):
+            row = "  ".join(f"{cm[i, j]:>7,}" for j in range(3))
+            print(f"  True {g}    {row}")
+        print(f"\n{classification_report(y_val, y_pred, labels=[1,2,3], target_names=['Grade 1','Grade 2','Grade 3'], digits=4)}")
+        cm_nodiag = cm.copy()
+        np.fill_diagonal(cm_nodiag, 0)
+        wt, wp = np.unravel_index(cm_nodiag.argmax(), cm_nodiag.shape)
+        print(f"  Biggest confusion: Grade {wt+1} predicted as Grade {wp+1} ({cm_nodiag[wt, wp]:,} samples)")
+
+    # STEP 2: Hard Cases
+    print("\nSTEP 2: DISAGREEMENT ANALYSIS — HARD CASES")
+    y_val_arr   = y_val.values
+    wrong_masks = {name: (pred != y_val_arr) for name, pred in predictions.items()}
+    print("\n  Per-model error rate:")
+    for name, mask in wrong_masks.items():
+        print(f"    {name:<20} {mask.mean():.2%}  ({mask.sum():,} wrong)")
+
+    hard_mask = np.ones(len(y_val_arr), dtype=bool)
+    for mask in wrong_masks.values():
+        hard_mask = hard_mask & mask
+    n_hard = hard_mask.sum()
+
+    any_wrong = np.zeros(len(y_val_arr), dtype=bool)
+    for mask in wrong_masks.values():
+        any_wrong = any_wrong | mask
+    easy_mask = ~any_wrong
+
+    print(f"\n  Wrong by ALL 4 models:   {n_hard:,} ({n_hard/len(y_val_arr):.2%})")
+    print(f"  Correct by ALL 4 models: {easy_mask.sum():,} ({easy_mask.mean():.2%})")
+    print("\n  Grade distribution — hard cases vs. all val:")
+    for g in [1, 2, 3]:
+        hp = (y_val_arr[hard_mask] == g).mean() if n_hard > 0 else 0
+        ap = (y_val_arr == g).mean()
+        print(f"    Grade {g}:  hard={hp:.1%}  all={ap:.1%}")
+
+    hard_cases_df = X_val.iloc[hard_mask].copy()
+    hard_cases_df['true_grade'] = y_val_arr[hard_mask]
+    for name, pred in predictions.items():
+        hard_cases_df[f'pred_{name.replace(" ", "_").lower()}'] = pred[hard_mask]
+
+    # STEP 3: Feature Profile
+    print("\nSTEP 3: FEATURE PROFILE — HARD vs. CORRECT")
+    numeric_features = [c for c in ['age', 'height_percentage', 'area_percentage',
+                                     'count_floors_pre_eq', 'count_families'] if c in X_val.columns]
+    print(f"  {'Feature':<30}  {'Hard':>10}  {'Correct':>10}  {'Diff':>8}")
+    for feat in numeric_features:
+        hm = X_val.iloc[hard_mask][feat].mean()
+        em = X_val.iloc[easy_mask][feat].mean()
+        print(f"  {feat:<30}  {hm:>10.2f}  {em:>10.2f}  {hm-em:>+8.2f}")
+
+    # STEP 4: Feature Importance
+    print("\nSTEP 4: FEATURE IMPORTANCE — TOP 15 PER MODEL")
+    importance_df = pd.DataFrame({'feature': feature_names})
+    for name, imp in importances.items():
+        importance_df[name] = imp
+    importance_df = importance_df.set_index('feature')
+
+    top15 = {name: set(importance_df[name].sort_values(ascending=False).head(15).index)
+             for name in importances}
+    consensus = set.intersection(*top15.values()) if top15 else set()
+    print(f"\n  In Top 15 for ALL 4 models ({len(consensus)} features):")
+    for f in sorted(consensus):
+        print(f"    ✓  {f}")
+
+    for name in importances:
+        print(f"\n  {name} — Top 15:")
+        ranked = importance_df[name].sort_values(ascending=False).head(15)
+        for rank, (feat, imp) in enumerate(ranked.items(), 1):
+            marker = '★' if feat in consensus else ' '
+            print(f"    {rank:>2}. {feat:<40} {imp:>10.6f} {marker}")
+
+    out_dir = Path('outputs')
+    out_dir.mkdir(parents=True, exist_ok=True)
+    hard_cases_df.to_csv(out_dir / 'hard_cases.csv')
+    importance_df.reset_index().to_csv(out_dir / 'feature_importance_comparison.csv', index=False)
+    print(f"\n  Saved: outputs/hard_cases.csv ({n_hard:,} rows)")
+    print(f"  Saved: outputs/feature_importance_comparison.csv")
+
+    return hard_cases_df, importance_df
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1267,6 +1409,8 @@ def main():
                         help='Comma-separated list of models to compare, e.g. --models "Decision Tree,Random Forest,LightGBM"'
                              ' | Available: Decision Tree, Random Forest, LightGBM, XGBoost, CatBoost,'
                              ' k-Nearest Neighbors, Logistic Regression, Naive Bayes, SVM (Linear)')
+    parser.add_argument('--analyze', action='store_true',
+                        help='Deep error analysis — fixed to the 4 ensemble models (RF, LGBM, XGB, CatBoost)')
     args = parser.parse_args()
 
     print("\n" + "="*60)
@@ -1301,6 +1445,16 @@ def main():
         n_splits=5,
         random_state=42,
     )
+
+    # ── --analyze: deep error analysis ───────────────────────────────────
+    if args.analyze:
+        print(">>> Deep Error Analysis — 4 Ensemble Models (RF, LGBM, XGB, CatBoost)")
+        analyze_errors(
+            X_train_full, y_train_full,
+            pipeline_kwargs=pipeline_kwargs,
+            sample_size=getattr(args, 'sample', None),
+        )
+        return
 
     # ── --compare: model comparison ───────────────────────────────────────
     if args.compare:
@@ -1340,6 +1494,7 @@ def main():
 
     # ── normal run: train on full 260k → submission file ──────────────────
     print(">>> Training final pipeline on full training data (260k)")
+    print("    Classifier: Random Forest (best Accuracy in Week 04 comparison)")
     final_pipeline = build_pipeline(**pipeline_kwargs)
     final_pipeline.fit(X_train_full, y_train_full)
 
