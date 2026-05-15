@@ -1217,15 +1217,16 @@ def analyze_feature_importance(pipeline, top_n=15):
         print(f"  {row['feature']:.<45} {row['importance']:.6f}")
 
     zero = df[df['importance'] == 0]
+
     if len(zero) > 0:
-        print(f"\n⚠ {len(zero)} Zero-Importance Features gefunden")
+        print(f"\n⚠ {len(zero)} zero-importance features found")
     else:
         print("\n✓ No zero-importance features")
 
     print(f"\nTotal features:          {len(feature_names)}")
     print(f"Non-zero importance:     {(importances > 0).sum()}")
-    print(f"Top-5 kum. Importance:   {df.head(5)['importance'].sum():.2%}")
-    print(f"Top-10 kum. Importance:  {df.head(10)['importance'].sum():.2%}")
+    print(f"Top-5 cumulative importance:    {df.head(5)['importance'].sum():.2%}")
+    print(f"Top-10 cumulative importance:  {df.head(10)['importance'].sum():.2%}")
     print("="*60 + "\n")
 
     return df
