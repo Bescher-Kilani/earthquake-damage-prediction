@@ -15,6 +15,7 @@ pip install -r requirements.txt
 
 echo "=== Creating output directory ==="
 mkdir -p outputs
+mkdir -p data
 
 echo ""
 echo "=== Setup complete ==="
