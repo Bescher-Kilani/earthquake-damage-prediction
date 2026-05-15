@@ -1,5 +1,54 @@
 # Earthquake Damage Prediction — Team 2
 
+## Server Setup (server)
+
+### 1. Connect via SSH
+```bash
+ssh user@server
+```
+
+### 2. Clone the repository
+```bash
+git clone https://github.com/Bescher-Kilani/earthquake-damage-prediction.git Earthquake
+cd Earthquake
+```
+
+### 3. Run setup script (once)
+```bash
+bash setup.sh
+```
+
+Creates the virtual environment, installs all dependencies, and creates `outputs/`.
+
+### 4. Copy data files to the server
+Run this from your **local machine**:
+```bash
+scp train_values.csv train_labels.csv test_values.csv user@server:~/Earthquake/data/
+```
+
+### 5. Activate virtual environment
+Required at the start of **every new session**:
+```bash
+source venv/bin/activate
+```
+
+### 6. Run the pipeline
+```bash
+python3 src/pipeline_sklearn.py
+```
+
+### Running long jobs (tmux)
+Use tmux so the pipeline keeps running if the SSH connection drops:
+```bash
+tmux new -s pipeline          # create session
+source venv/bin/activate
+python3 src/pipeline_sklearn.py --compare
+# Ctrl+b then d               → detach (session keeps running)
+tmux a -t pipeline            # reattach later
+```
+
+---
+
 ## Usage
 
 ```bash
