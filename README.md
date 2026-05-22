@@ -1,93 +1,445 @@
-# task 1
+# Earthquake Damage Prediction Pipeline
 
+This project builds a machine-learning pipeline to predict building earthquake damage grades. The pipeline loads the data, cleans missing and noisy values, engineers structural and geographic features, compares multiple prediction models, performs error analysis, and generates a submission file.
 
+---
 
-## Getting started
+## Project Structure
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
-
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
-
-## Add your files
-
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
-
+```text
+TASK-1/
+├── data/
+│   ├── train_values.csv
+│   ├── train_labels.csv
+│   └── test_values.csv
+│
+├── notebooks/
+│   └── week01_exploration.ipynb
+│
+├── outputs/
+│   ├── Team2_prediction.csv
+│   ├── model_comparison.csv
+│   ├── hard_cases.csv
+│   ├── feature_importance_comparison.csv
+│   └── stacking_weights.csv
+│
+├── src/
+│   └── pipeline.py
+│
+├── .gitignore
+├── pipeline_readme.md
+├── README.md
+└── requirements.txt
 ```
-cd existing_repo
-git remote add origin https://github.com/Bescher-Kilani/earthquake-damage-prediction.git
-git branch -M main
-git push -uf origin main
+
+---
+
+## Setup
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Create data folder
+mkdir -p data
 ```
 
-## Integrate with your tools
+Place the CSV files in the `data/` folder before running the pipeline.
 
-* [Set up project integrations](https://github.com/Bescher-Kilani/earthquake-damage-prediction/-/settings/integrations)
+Required input files:
 
-## Collaborate with your team
+```text
+data/train_values.csv
+data/train_labels.csv
+data/test_values.csv
+```
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+---
 
-## Test and Deploy
+## Run Pipeline
 
-Use the built-in continuous integration in GitLab.
+Run the final training pipeline and generate a submission file:
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+```bash
+python src/pipeline.py
+```
 
-***
+Output:
 
-# Editing this README
+```text
+outputs/Team2_prediction.csv
+```
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+Run model comparison with cross-validation:
 
-## Suggestions for a good README
+```bash
+python src/pipeline.py --compare
+```
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+Run a faster model comparison using a single train/validation split:
 
-## Name
-Choose a self-explaining name for your project.
+```bash
+python src/pipeline.py --compare --no-cv
+```
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+Run comparison on a smaller sample:
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+```bash
+python src/pipeline.py --compare --sample 20000
+```
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+Compare selected models only:
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+```bash
+python src/pipeline.py --compare --models "Random Forest,LightGBM,CatBoost,Voting (soft),Stacking"
+```
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+Run hard voting instead of soft voting:
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+```bash
+python src/pipeline.py --compare --voting-mode hard
+```
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+Run deep error analysis:
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+```bash
+python src/pipeline.py --analyze
+```
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+---
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+## Pipeline Steps
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+1. **Load data** from the `data/` folder.
+2. **Split data** into training and validation sets before cleaning to avoid data leakage.
+3. **Clean missing values:**
+   - Treat `age = 0` as artificial missing data.
+   - Replace artificial missing values with `NaN`.
+   - Optionally create missing-value indicators such as `age_was_missing`.
+   - Impute numeric values with the median.
+   - Impute categorical values with the mode.
+4. **Remove uninformative features:**
+   - Drop constant columns.
+   - Drop highly correlated numeric columns using a correlation threshold of `0.9`.
+5. **Encode categorical features:**
+   - Use Label Encoding for low-cardinality categorical features.
+   - Use Target Encoding for high-cardinality geographic and engineered categorical features.
+6. **Engineer structural features:**
+   - `height_per_floor`
+   - `slenderness`
+   - `age_group`
+   - `ground_height_binned`
+7. **Recombine binary features:**
+   - Combine `has_superstructure_*` columns into `superstructure_type`.
+   - Combine `has_secondary_use_*` columns into `secondary_use_type`.
+8. **Group rare categories:**
+   - Replace infrequent categories with `OTHER`.
+9. **Train and compare prediction models.**
+10. **Analyze model performance and feature importance.**
+11. **Predict on the test set.**
+12. **Save predictions to `outputs/Team2_prediction.csv`.**
 
-## License
-For open source projects, say how it is licensed.
+---
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+## Week 4: Prediction Models
+
+In Week 4, we extended the pipeline from a single classifier to a model-comparison framework. The preprocessing and feature-engineering steps remain the same, but we now compare multiple prediction models using Accuracy as the primary metric and MCC as the secondary metric.
+
+The compared models include:
+
+- Decision Tree
+- Random Forest
+- LightGBM
+- XGBoost
+- CatBoost
+- k-Nearest Neighbors
+- Logistic Regression
+- Naive Bayes
+- Linear SVM
+- Voting Classifier
+- Stacking Classifier
+
+### Voting Classifier
+
+The Voting model combines predictions from Random Forest, LightGBM, and CatBoost. It supports both:
+
+- **Soft voting:** averages predicted probabilities.
+- **Hard voting:** uses majority vote.
+
+The voting mode can be selected from the command line using:
+
+```bash
+--voting-mode soft
+```
+
+or:
+
+```bash
+--voting-mode hard
+```
+
+Custom voting weights can also be tested:
+
+```bash
+--voting-weights "1,5,3"
+```
+
+The voting weights follow this order:
+
+```text
+Random Forest, LightGBM, CatBoost
+```
+
+### Stacking Classifier
+
+The Stacking model uses Random Forest, LightGBM, and CatBoost as base models, with Logistic Regression as the final meta-model.
+
+The stacking model also reports a contribution summary. These values are not simple voting weights. Instead, they are derived from the final Logistic Regression coefficients and show the relative influence of each base model.
+
+Latest stacking contribution summary:
+
+| Base model | Normalized contribution |
+|---|---:|
+| LightGBM | 0.57 |
+| CatBoost | 0.32 |
+| Random Forest | 0.11 |
+
+---
+
+## Results
+
+### Final Performance
+
+| Metric | Week 2 | Week 3 | Week 4 |
+|---|---:|---:|---:|
+| MCC | 0.4077 | 0.5023 | 0.5239 |
+| Accuracy | 0.6881 | 0.7327 | 0.7437 |
+
+Features after preprocessing and feature engineering:
+
+```text
+24 features
+```
+
+### Week 3 vs. Week 2
+
+| Metric | Change |
+|---|---:|
+| MCC | +23.2% |
+| Accuracy | +6.5% |
+
+### Week 4 vs. Week 3
+
+| Metric | Change |
+|---|---:|
+| MCC | +4.3% |
+| Accuracy | +1.5% |
+
+### Week 4 Model Comparison
+
+Latest single-split analysis results:
+
+| Model | Accuracy | MCC | Training time |
+|---|---:|---:|---:|
+| Stacking | 0.7437 | 0.5239 | 127.0s |
+| Random Forest | 0.7426 | 0.5185 | 10.3s |
+| Voting soft | 0.7424 | 0.5198 | 27.5s |
+| LightGBM | 0.7418 | 0.5209 | 3.7s |
+| XGBoost | 0.7392 | 0.5146 | 32.6s |
+| CatBoost | 0.7366 | 0.5087 | 10.4s |
+
+The best model in this analysis was **Stacking**, with:
+
+```text
+Accuracy = 0.7437
+MCC      = 0.5239
+```
+
+---
+
+## Error Analysis
+
+Deep error analysis was added to compare the main ensemble models:
+
+- Random Forest
+- LightGBM
+- XGBoost
+- CatBoost
+- Voting
+- Stacking
+
+The analysis includes:
+
+- Confusion matrices
+- Per-class precision, recall, and F1-score
+- Hard-case analysis
+- Feature profile comparison
+- Feature importance comparison
+- Stacking contribution summary
+
+### Biggest Confusion per Model
+
+The biggest confusion for all models was:
+
+```text
+True Grade 3 predicted as Grade 2
+```
+
+| Model | Biggest confusion | Count | % of true Grade 3 | % of validation set |
+|---|---|---:|---:|---:|
+| Random Forest | Grade 3 → Grade 2 | 6,381 | 36.58% | 12.24% |
+| LightGBM | Grade 3 → Grade 2 | 6,184 | 35.45% | 11.86% |
+| XGBoost | Grade 3 → Grade 2 | 6,269 | 35.94% | 12.03% |
+| CatBoost | Grade 3 → Grade 2 | 6,369 | 36.51% | 12.22% |
+| Voting soft | Grade 3 → Grade 2 | 6,332 | 36.30% | 12.15% |
+| Stacking | Grade 3 → Grade 2 | 6,063 | 34.76% | 11.63% |
+
+### Stacking Confusion Matrix
+
+| True grade \ Predicted grade | Predicted Grade 1 | Predicted Grade 2 | Predicted Grade 3 | Total |
+|---|---:|---:|---:|---:|
+| True Grade 1 | 2,642 | 2,325 | 58 | 5,025 |
+| True Grade 2 | 1,119 | 24,815 | 3,718 | 29,652 |
+| True Grade 3 | 75 | 6,063 | 11,306 | 17,444 |
+
+### Stacking Classification Metrics
+
+| Grade | Precision | Recall | F1-score | Support |
+|---|---:|---:|---:|---:|
+| Grade 1 | 0.6887 | 0.5258 | 0.5963 | 5,025 |
+| Grade 2 | 0.7474 | 0.8369 | 0.7896 | 29,652 |
+| Grade 3 | 0.7496 | 0.6481 | 0.6952 | 17,444 |
+| Accuracy |  |  | 0.7437 | 52,121 |
+| Macro avg | 0.7286 | 0.6703 | 0.6937 | 52,121 |
+| Weighted avg | 0.7425 | 0.7437 | 0.7394 | 52,121 |
+
+---
+
+## What Worked
+
+### 1. Missing Value Indicators
+
+```python
+age_was_missing = age.isnull()
+```
+
+Missing-value indicators preserve useful information about whether a value was originally missing. This was especially useful for the `age` feature.
+
+### 2. Binary Feature Recombination
+
+```python
+has_superstructure_* → superstructure_type
+has_secondary_use_* → secondary_use_type
+```
+
+This reduced many binary columns into more meaningful categorical features and allowed effective Target Encoding.
+
+### 3. Target Encoding
+
+```python
+geo_level_1_id → geo_level_1_id_target_enc
+geo_level_2_id → geo_level_2_id_target_enc
+geo_level_3_id → geo_level_3_id_target_enc
+superstructure_type → superstructure_type_target_enc
+```
+
+Target Encoding replaced arbitrary IDs with meaningful damage-risk values. The geographic target-encoded features were consistently among the most important features across models.
+
+### 4. Ensemble Models
+
+Tree-based ensemble models performed best overall. Random Forest, LightGBM, Voting, and Stacking all achieved similar accuracy, with Stacking producing the best single-split result.
+
+### 5. Stacking
+
+Stacking improved the final result by combining the strengths of LightGBM, CatBoost, and Random Forest. The meta-model relied most heavily on LightGBM, followed by CatBoost and Random Forest.
+
+---
+
+## What Did Not Work
+
+### Feature Combinations
+
+Adding too many feature combinations at the same time caused overfitting and reduced performance.
+
+### Infrequent Category Merging Alone
+
+Merging rare categories alone did not significantly improve performance because Target Encoding already handled rare categories reasonably well.
+
+### Binning Continuous Variables
+
+Binning continuous variables such as age reduced performance for tree-based models. Tree models can already learn effective split points directly from continuous features.
+
+### One-Hot Encoding
+
+One-Hot Encoding caused a large performance drop because high-cardinality geographic features were not handled effectively. Target Encoding worked better for these features.
+
+---
+
+## Feature Importance
+
+Across Random Forest, LightGBM, XGBoost, and CatBoost, the most consistently important features were:
+
+```text
+geo_level_3_id_target_enc
+geo_level_2_id_target_enc
+geo_level_1_id_target_enc
+superstructure_type_target_enc
+ground_height_binned_target_enc
+foundation_type
+roof_type
+age
+age_was_missing
+count_families
+```
+
+These results show that location-based risk, structure type, foundation type, roof type, and age-related features are the strongest predictors of earthquake damage.
+
+---
+
+## Key Learnings
+
+### Target Encoding
+
+- Effective for high-cardinality features.
+- Especially useful for geographic IDs.
+- Smoothing helps reduce overfitting.
+
+### Feature Engineering
+
+- Recombined structural features improved model usability.
+- Continuous numeric features should generally be kept as continuous values for tree-based models.
+- Rare category grouping can help stabilize categorical features.
+
+### Model Selection
+
+- Stacking achieved the best single-split result.
+- Voting was competitive but did not outperform Stacking.
+- Random Forest remained strong and much faster than Stacking.
+- LightGBM provided strong MCC with very fast training time.
+
+### Error Analysis
+
+- The main weakness is confusing severe damage with medium damage.
+- The most common error is Grade 3 predicted as Grade 2.
+- Future improvements should focus on separating Grade 2 and Grade 3 more clearly.
+
+---
+
+## Output Format
+
+The final submission file follows this format:
+
+```csv
+building_id,damage_grade
+300051,3
+99355,2
+...
+```
+
+Saved to:
+
+```text
+outputs/Team2_prediction.csv
+```
+
+---

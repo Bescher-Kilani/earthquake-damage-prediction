@@ -22,7 +22,11 @@ Pipeline Steps:
 
 NEW Week 04:
    - compare_models(): compares Decision Tree, kNN, Logistic Regression,
-     Naive Bayes, SVM using cross-validation on X_trainval
+     Naive Bayes, SVM, tree ensembles, Voting, and Stacking using
+     cross-validation on X_trainval
+   - Voting supports --voting-mode soft or hard
+   - Stacking prints/saves the final-estimator coefficient contribution
+     for each base model
    - Primary metric: Accuracy (competition); secondary: MCC (course)
 """
 
@@ -30,7 +34,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 
-from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.base import BaseEstimator, TransformerMixin, clone
 from sklearn.model_selection import KFold, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import LabelEncoder, StandardScaler
@@ -44,7 +48,7 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.naive_bayes import GaussianNB
 from sklearn.svm import LinearSVC
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, VotingClassifier, StackingClassifier
 from lightgbm import LGBMClassifier
 from xgboost import XGBClassifier
 from catboost import CatBoostClassifier
@@ -69,7 +73,7 @@ def create_oof_target_mean(X, y, group_col, n_splits=5, random_state=42):
     for train_idx, val_idx in kf.split(X):
         X_fold_train = X.iloc[train_idx]
         y_fold_train = y.iloc[train_idx]
-        X_fold_val   = X.iloc[val_idx]
+        X_fold_val = X.iloc[val_idx]
 
         mapping = (
             pd.concat([X_fold_train[group_col], y_fold_train], axis=1)
@@ -166,7 +170,8 @@ class MedianModeImputer(BaseEstimator, TransformerMixin):
                 self.fill_values_[col] = X[col].median()
             else:
                 mode = X[col].mode()
-                self.fill_values_[col] = mode[0] if len(mode) > 0 else 'unknown'
+                self.fill_values_[col] = mode[0] if len(
+                    mode) > 0 else 'unknown'
         return self
 
     def transform(self, X):
@@ -193,7 +198,8 @@ class ConstantFeatureDropper(BaseEstimator, TransformerMixin):
             col for col in X.columns if X[col].nunique() == 1
         ]
         if self.drop_cols_:
-            print(f"[ConstantFeatureDropper] Dropping {len(self.drop_cols_)} uninformative features")
+            print(
+                f"[ConstantFeatureDropper] Dropping {len(self.drop_cols_)} uninformative features")
         return self
 
     def transform(self, X):
@@ -214,24 +220,28 @@ class LowCardinalityLabelEncoder(BaseEstimator, TransformerMixin):
     """
 
     def fit(self, X, y=None):
-        geo_features = {col for col in X.columns if col.startswith('geo_level_')}
+        geo_features = {
+            col for col in X.columns if col.startswith('geo_level_')}
         categorical_cols = X.select_dtypes(
             include=['object', 'string', 'category']
         ).columns.tolist()
-        self.encode_cols_ = [c for c in categorical_cols if c not in geo_features]
+        self.encode_cols_ = [
+            c for c in categorical_cols if c not in geo_features]
 
         self.encoders_ = {}
         for col in self.encode_cols_:
             enc = LabelEncoder()
             enc.fit(X[col].astype(str))
-            self.encoders_[col] = {cls: i for i, cls in enumerate(enc.classes_)}
+            self.encoders_[col] = {cls: i for i,
+                                   cls in enumerate(enc.classes_)}
         return self
 
     def transform(self, X):
         X = X.copy()
         for col, mapping in self.encoders_.items():
             if col in X.columns:
-                X[col] = X[col].astype(str).map(lambda x, m=mapping: m.get(x, -1))
+                X[col] = X[col].astype(str).map(
+                    lambda x, m=mapping: m.get(x, -1))
         return X
 
 
@@ -261,7 +271,8 @@ class HighCorrelationDropper(BaseEstimator, TransformerMixin):
             if any(upper_tri[col] > self.threshold)
         ]
         if self.drop_cols_:
-            print(f"[HighCorrelationDropper] Dropping {len(self.drop_cols_)} highly correlated features (threshold={self.threshold})")
+            print(
+                f"[HighCorrelationDropper] Dropping {len(self.drop_cols_)} highly correlated features (threshold={self.threshold})")
         return self
 
     def transform(self, X):
@@ -297,8 +308,10 @@ class BinaryFeatureRecombiner(BaseEstimator, TransformerMixin):
 
     def fit(self, X, y=None):
         if self.enabled:
-            self.superstructure_cols_ = [c for c in X.columns if c.startswith('has_superstructure_')]
-            self.secondary_use_cols_  = [c for c in X.columns if c.startswith('has_secondary_use_')]
+            self.superstructure_cols_ = [
+                c for c in X.columns if c.startswith('has_superstructure_')]
+            self.secondary_use_cols_ = [
+                c for c in X.columns if c.startswith('has_secondary_use_')]
         return self
 
     def transform(self, X):
@@ -306,11 +319,15 @@ class BinaryFeatureRecombiner(BaseEstimator, TransformerMixin):
             return X
         X = X.copy()
         if self.superstructure_cols_:
-            X['superstructure_type'] = self._combine(X, self.superstructure_cols_, 'has_superstructure_')
-            X.drop(columns=self.superstructure_cols_, inplace=True, errors='ignore')
+            X['superstructure_type'] = self._combine(
+                X, self.superstructure_cols_, 'has_superstructure_')
+            X.drop(columns=self.superstructure_cols_,
+                   inplace=True, errors='ignore')
         if self.secondary_use_cols_:
-            X['secondary_use_type'] = self._combine(X, self.secondary_use_cols_, 'has_secondary_use_')
-            X.drop(columns=self.secondary_use_cols_, inplace=True, errors='ignore')
+            X['secondary_use_type'] = self._combine(
+                X, self.secondary_use_cols_, 'has_secondary_use_')
+            X.drop(columns=self.secondary_use_cols_,
+                   inplace=True, errors='ignore')
         return X
 
 
@@ -343,7 +360,8 @@ class StructuralFeatureCreator(BaseEstimator, TransformerMixin):
                 X['height_percentage'] / X['count_floors_pre_eq'].replace(0, 1)
             )
         if self.use_slenderness:
-            X['slenderness'] = X['height_percentage'] / (X['area_percentage'] + 1)
+            X['slenderness'] = X['height_percentage'] / \
+                (X['area_percentage'] + 1)
         if self.use_age_group:
             X['age_group'] = pd.cut(
                 X['age'],
@@ -387,7 +405,8 @@ class InteractionFeatureCreator(BaseEstimator, TransformerMixin):
                 labels=['low', 'medium', 'high', 'very_high']
             )
             X['ground_height_binned'] = (
-                X['ground_floor_type'].astype(str) + '_' + height_bins.astype(str)
+                X['ground_floor_type'].astype(
+                    str) + '_' + height_bins.astype(str)
             )
         return X
 
@@ -409,7 +428,7 @@ class GeoAggregationFeatureCreator(BaseEstimator, TransformerMixin):
 
     def fit(self, X, y=None):
         if self.use_geo2_avg_age:
-            self.geo2_avg_age_   = X.groupby('geo_level_2_id')['age'].mean()
+            self.geo2_avg_age_ = X.groupby('geo_level_2_id')['age'].mean()
             self.global_avg_age_ = X['age'].mean()
         return self
 
@@ -482,7 +501,8 @@ class OOFTargetMeanEncoder(BaseEstimator, TransformerMixin):
                 X['geo2_target_mean'] = self._oof_geo2
             else:
                 X['geo2_target_mean'] = (
-                    X['geo_level_2_id'].map(self.geo2_mapping_).fillna(self.global_mean_)
+                    X['geo_level_2_id'].map(
+                        self.geo2_mapping_).fillna(self.global_mean_)
                 )
 
         if self.use_geo3:
@@ -490,7 +510,8 @@ class OOFTargetMeanEncoder(BaseEstimator, TransformerMixin):
                 X['geo3_target_mean'] = self._oof_geo3
             else:
                 X['geo3_target_mean'] = (
-                    X['geo_level_3_id'].map(self.geo3_mapping_).fillna(self.global_mean_)
+                    X['geo_level_3_id'].map(
+                        self.geo3_mapping_).fillna(self.global_mean_)
                 )
         return X
 
@@ -564,7 +585,8 @@ class RareCategoryGrouper(BaseEstimator, TransformerMixin):
         X = X.copy()
         for col, rare_categories in self.rare_map_.items():
             if col in X.columns:
-                X[col] = X[col].astype('object').replace(rare_categories, 'OTHER')
+                X[col] = X[col].astype('object').replace(
+                    rare_categories, 'OTHER')
         return X
 
 
@@ -615,7 +637,8 @@ class TargetEncoder(BaseEstimator, TransformerMixin):
             }).groupby('category', observed=False)['target'].agg(['mean', 'count'])
 
             agg['smoothed_mean'] = (
-                (agg['mean'] * agg['count'] + self.smoothing * self.global_mean_)
+                (agg['mean'] * agg['count'] +
+                 self.smoothing * self.global_mean_)
                 / (agg['count'] + self.smoothing)
             )
             self.encodings_[col] = agg['smoothed_mean'].to_dict()
@@ -716,33 +739,39 @@ def build_pipeline(
 
     steps = [
         # ── Cleaning ─────────────────────────────────────────────────────────
-        ('artificial_nan',    ArtificialNanReplacer(rules=artificial_missing_rules)),
-        ('missing_indicator', MissingIndicatorAdder(add_indicators=add_missing_indicators if handle_missing else False)),
+        ('artificial_nan',    ArtificialNanReplacer(
+            rules=artificial_missing_rules)),
+        ('missing_indicator', MissingIndicatorAdder(
+            add_indicators=add_missing_indicators if handle_missing else False)),
         ('imputer',           MedianModeImputer()),
         ('constant_drop',     ConstantFeatureDropper()),
         ('label_enc',         LowCardinalityLabelEncoder()),
-        ('corr_drop',         HighCorrelationDropper(threshold=correlation_threshold)),
+        ('corr_drop',         HighCorrelationDropper(
+            threshold=correlation_threshold)),
 
         # ── Feature Engineering ──────────────────────────────────────────────
         ('binary_recombine',  BinaryFeatureRecombiner(enabled=USE_RECOMBINE_BINARY)),
         ('structural',        StructuralFeatureCreator(
-                                  use_height_per_floor=USE_HEIGHT_PER_FLOOR,
-                                  use_slenderness=USE_SLENDERNESS,
-                                  use_age_group=USE_AGE_GROUP)),
+            use_height_per_floor=USE_HEIGHT_PER_FLOOR,
+            use_slenderness=USE_SLENDERNESS,
+            use_age_group=USE_AGE_GROUP)),
         ('interaction',       InteractionFeatureCreator(
-                                  use_raw=USE_GROUND_HEIGHT_RAW,
-                                  use_binned=USE_GROUND_HEIGHT_BINNED)),
-        ('geo_agg',           GeoAggregationFeatureCreator(use_geo2_avg_age=USE_GEO2_AVG_AGE)),
+            use_raw=USE_GROUND_HEIGHT_RAW,
+            use_binned=USE_GROUND_HEIGHT_BINNED)),
+        ('geo_agg',           GeoAggregationFeatureCreator(
+            use_geo2_avg_age=USE_GEO2_AVG_AGE)),
         ('oof_target_mean',   OOFTargetMeanEncoder(
-                                  use_geo2=USE_GEO2_TARGET_MEAN,
-                                  use_geo3=USE_GEO3_TARGET_MEAN,
-                                  n_splits=n_splits,
-                                  random_state=random_state)),
-        ('drop_originals',    OriginalFeatureDropper(enabled=DROP_ORIGINAL_FEATURES)),
+            use_geo2=USE_GEO2_TARGET_MEAN,
+            use_geo3=USE_GEO3_TARGET_MEAN,
+            n_splits=n_splits,
+            random_state=random_state)),
+        ('drop_originals',    OriginalFeatureDropper(
+            enabled=DROP_ORIGINAL_FEATURES)),
         ('rare_category',     RareCategoryGrouper(
-                                  enabled=USE_RARE_CATEGORY_GROUPING,
-                                  threshold=RARE_CATEGORY_THRESHOLD)),
-        ('target_enc',        TargetEncoder(enabled=USE_TARGET_ENCODING, smoothing=smoothing)),
+            enabled=USE_RARE_CATEGORY_GROUPING,
+            threshold=RARE_CATEGORY_THRESHOLD)),
+        ('target_enc',        TargetEncoder(
+            enabled=USE_TARGET_ENCODING, smoothing=smoothing)),
         ('col_aligner',       ColumnAligner()),
 
         # ── Classifier ───────────────────────────────────────────────────────
@@ -759,13 +788,250 @@ def build_pipeline(
 # Primary metric: Accuracy (competition); secondary: MCC (course)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_models_for_comparison():
+def _make_random_forest():
+    return RandomForestClassifier(
+        n_estimators=200,
+        max_depth=15,
+        random_state=42,
+        n_jobs=-1
+    )
+
+
+def _make_lightgbm():
+    return LGBMClassifier(
+        n_estimators=300,
+        learning_rate=0.05,
+        num_leaves=63,
+        random_state=42,
+        n_jobs=-1,
+        verbose=-1
+    )
+
+
+def _make_xgboost():
+    return XGBClassifier(
+        n_estimators=300,
+        learning_rate=0.05,
+        max_depth=6,
+        random_state=42,
+        n_jobs=-1,
+        eval_metric='mlogloss',
+        verbosity=0
+    )
+
+
+def _make_catboost():
+    return CatBoostClassifier(
+        iterations=300,
+        learning_rate=0.05,
+        depth=6,
+        random_seed=42,
+        verbose=0
+    )
+
+
+def _make_logistic_regression(max_iter=1000):
+    return LogisticRegression(
+        max_iter=max_iter,
+        random_state=42,
+        n_jobs=-1,
+        C=1.0
+    )
+
+
+def get_meta_ensemble_base_estimators():
+    """
+    Base estimators used by Voting and Stacking.
+
+    XGBoost is intentionally not included here because this script's target
+    labels are 1, 2, 3, while the XGBoost sklearn wrapper commonly expects
+    multiclass labels to start at 0. Standalone XGBoost is still compared with
+    the existing label-shift logic in compare_models().
+    """
+    return [
+        ('rf', _make_random_forest()),
+        ('lgbm', _make_lightgbm()),
+        ('catboost', _make_catboost()),
+    ]
+
+
+def build_voting_classifier(voting_mode='soft', weights=None):
+    """
+    Builds a VotingClassifier.
+
+    Parameters
+    ----------
+    voting_mode : {'soft', 'hard'}
+        soft → average predicted probabilities; hard → majority vote.
+    weights : list[float] or None
+        Optional voting weights in this exact order: rf, lgbm, catboost.
+    """
+    voting_mode = voting_mode.lower().strip()
+    if voting_mode not in {'soft', 'hard'}:
+        raise ValueError("voting_mode must be either 'soft' or 'hard'")
+
+    if weights is not None and len(weights) != len(get_meta_ensemble_base_estimators()):
+        raise ValueError("Voting weights must have 3 values: rf,lgbm,catboost")
+
+    return VotingClassifier(
+        estimators=get_meta_ensemble_base_estimators(),
+        voting=voting_mode,
+        weights=weights,
+        n_jobs=-1
+    )
+
+
+def build_stacking_classifier(cv=5, passthrough=False):
+    """
+    Builds a StackingClassifier.
+
+    The final estimator is multinomial Logistic Regression. The stacking
+    contribution printed later is based on the final estimator's coefficients
+    over each base model's predicted probabilities.
+    """
+    return StackingClassifier(
+        estimators=get_meta_ensemble_base_estimators(),
+        final_estimator=_make_logistic_regression(max_iter=2000),
+        stack_method='predict_proba',
+        cv=cv,
+        passthrough=passthrough,
+        n_jobs=-1
+    )
+
+
+def get_stacking_model_weights(stacking_clf):
+    """
+    Extracts an interpretable contribution table from a fitted StackingClassifier.
+
+    Note: stacking does not learn one simple scalar weight per base model.
+    It trains a final estimator on base-model predictions. This function groups
+    the absolute final-estimator coefficients by base model and normalizes them
+    so they are easy to read as relative contribution scores.
+    """
+    if not isinstance(stacking_clf, StackingClassifier):
+        return pd.DataFrame()
+
+    final_estimator = getattr(stacking_clf, 'final_estimator_', None)
+    coef = getattr(final_estimator, 'coef_', None)
+    if coef is None:
+        return pd.DataFrame()
+
+    coef = np.asarray(coef)
+    if coef.ndim == 1:
+        coef = coef.reshape(1, -1)
+
+    estimator_names = [name for name, _ in stacking_clf.estimators]
+    n_estimators = len(estimator_names)
+    if n_estimators == 0:
+        return pd.DataFrame()
+
+    # If passthrough=True, original features are appended after stack features.
+    # We only summarize the columns created by base model predictions.
+    total_columns = coef.shape[1]
+    n_stack_columns = total_columns
+    if getattr(stacking_clf, 'passthrough', False) and hasattr(stacking_clf, 'n_features_in_'):
+        n_stack_columns = max(total_columns - stacking_clf.n_features_in_, 0)
+
+    if n_stack_columns == 0:
+        return pd.DataFrame()
+
+    columns_per_estimator = n_stack_columns // n_estimators
+    rows = []
+    for i, name in enumerate(estimator_names):
+        start = i * columns_per_estimator
+        end = start + columns_per_estimator
+        block = coef[:, start:end]
+        score = float(np.mean(np.abs(block))) if block.size else 0.0
+        rows.append({
+            'Model': name,
+            'MeanAbsFinalCoef': score
+        })
+
+    df = pd.DataFrame(rows)
+    total = df['MeanAbsFinalCoef'].sum()
+    df['NormalizedWeight'] = df['MeanAbsFinalCoef'] / total if total > 0 else 0.0
+    return df.sort_values('NormalizedWeight', ascending=False).reset_index(drop=True)
+
+
+def format_stacking_weights(weight_df):
+    """Formats a stacking contribution table into a compact printable string."""
+    if weight_df is None or weight_df.empty:
+        return ''
+    return ', '.join(
+        f"{row.Model}={row.NormalizedWeight:.2f}"
+        for row in weight_df.itertuples(index=False)
+    )
+
+
+def average_stacking_weights(weight_dfs):
+    """Averages stacking contribution tables collected across CV folds."""
+    weight_dfs = [df for df in weight_dfs if df is not None and not df.empty]
+    if not weight_dfs:
+        return pd.DataFrame()
+    combined = pd.concat(weight_dfs, ignore_index=True)
+    avg = (
+        combined
+        .groupby('Model', as_index=False)
+        .agg({
+            'MeanAbsFinalCoef': 'mean',
+            'NormalizedWeight': 'mean'
+        })
+        .sort_values('NormalizedWeight', ascending=False)
+        .reset_index(drop=True)
+    )
+    return avg
+
+
+def parse_voting_weights(weights_arg):
+    """Parses --voting-weights rf,lgbm,catboost into a list of floats."""
+    if weights_arg is None:
+        return None
+    weights = [float(x.strip()) for x in weights_arg.split(',') if x.strip()]
+    if len(weights) != 3:
+        raise ValueError(
+            "--voting-weights must contain exactly 3 numbers: rf,lgbm,catboost")
+    return weights
+
+
+def _filter_selected_models(models, selected_models):
+    """
+    Filters model dictionary by exact names or friendly aliases.
+
+    Examples accepted:
+      --models "Voting"
+      --models "Stacking"
+      --models "Voting (hard),Stacking"
+    """
+    if not selected_models:
+        return models
+
+    selected = {m.strip().lower() for m in selected_models}
+    filtered = {}
+
+    for name, value in models.items():
+        lower = name.lower()
+        aliases = {lower}
+        if lower.startswith('voting'):
+            aliases.add('voting')
+            aliases.add('voting ensemble')
+        if lower.startswith('stacking'):
+            aliases.add('stacking')
+            aliases.add('stacking ensemble')
+        if any(alias in selected for alias in aliases):
+            filtered[name] = value
+
+    return filtered
+
+
+def get_models_for_comparison(voting_mode='soft', voting_weights=None,
+                              include_voting=True, include_stacking=True,
+                              stacking_cv=5, stacking_passthrough=False):
     """
     Returns all comparison models as a dict.
     Tuple: (classifier, needs_scaling)
     needs_scaling=True → StandardScaler is applied before the classifier.
     """
-    return {
+    models = {
         'Decision Tree': (
             DecisionTreeClassifier(
                 random_state=42,
@@ -776,46 +1042,20 @@ def get_models_for_comparison():
             False
         ),
         'Random Forest': (
-            RandomForestClassifier(
-                n_estimators=200,
-                max_depth=15,
-                random_state=42,
-                n_jobs=-1
-            ),
+            _make_random_forest(),
             False   # tree-based, no scaling needed
         ),
         'LightGBM': (
-            LGBMClassifier(
-                n_estimators=300,
-                learning_rate=0.05,
-                num_leaves=63,
-                random_state=42,
-                n_jobs=-1,
-                verbose=-1
-            ),
-            False   # handles raw features natively
+            _make_lightgbm(),
+            False   # tree-based, no scaling needed
         ),
         'XGBoost': (
-            XGBClassifier(
-                n_estimators=300,
-                learning_rate=0.05,
-                max_depth=6,
-                random_state=42,
-                n_jobs=-1,
-                eval_metric='mlogloss',
-                verbosity=0
-            ),
+            _make_xgboost(),
             False
         ),
         'CatBoost': (
-            CatBoostClassifier(
-                iterations=300,
-                learning_rate=0.05,
-                depth=6,
-                random_seed=42,
-                verbose=0
-            ),
-            False   # CatBoost handles categoricals natively
+            _make_catboost(),
+            False   # preprocessing already converts categoricals to numeric
         ),
         'k-Nearest Neighbors': (
             KNeighborsClassifier(
@@ -826,12 +1066,7 @@ def get_models_for_comparison():
             True
         ),
         'Logistic Regression': (
-            LogisticRegression(
-                max_iter=1000,
-                random_state=42,
-                n_jobs=-1,
-                C=1.0
-            ),
+            _make_logistic_regression(),
             True
         ),
         'Naive Bayes': (
@@ -848,6 +1083,23 @@ def get_models_for_comparison():
         ),
     }
 
+    if include_voting:
+        voting_name = f"Voting ({voting_mode.lower()})"
+        models[voting_name] = (
+            build_voting_classifier(
+                voting_mode=voting_mode, weights=voting_weights),
+            False
+        )
+
+    if include_stacking:
+        models['Stacking'] = (
+            build_stacking_classifier(
+                cv=stacking_cv, passthrough=stacking_passthrough),
+            False
+        )
+
+    return models
+
 
 def _build_preproc_steps(pipeline_kwargs):
     """
@@ -855,33 +1107,40 @@ def _build_preproc_steps(pipeline_kwargs):
     Used inside each CV fold to avoid leakage.
     """
     from sklearn.dummy import DummyClassifier
-    full_pipeline = build_pipeline(**pipeline_kwargs, classifier=DummyClassifier())
+    full_pipeline = build_pipeline(
+        **pipeline_kwargs, classifier=DummyClassifier())
     return Pipeline(full_pipeline.steps[:-1])  # drop the classifier step
 
 
 def compare_models_single_split(X_train, y_train, X_val, y_val,
                                 pipeline_kwargs=None, sample_size=None,
-                                selected_models=None):
+                                selected_models=None, voting_mode='soft',
+                                voting_weights=None, include_voting=True,
+                                include_stacking=True, stacking_cv=5,
+                                stacking_passthrough=False):
     """
     Compares models with a single train/val split (no CV).
-    Faster than CV but less reliable — use for quick exploration.
+    Faster than CV but less reliable - use for quick exploration.
 
     Parameters
     ----------
     X_train, y_train : training data (raw)
     X_val, y_val     : validation data (raw)
     pipeline_kwargs  : pipeline configuration dict
-    sample_size      : optional — use only N samples from X_train
+    sample_size      : optional - use only N samples from X_train
+    voting_mode      : {'soft', 'hard'} - mode for VotingClassifier
+    voting_weights   : optional list of 3 floats for rf,lgbm,catboost
 
     Returns
     -------
-    pd.DataFrame with Accuracy, MCC, and training time per model
+    pd.DataFrame with Accuracy, MCC, training time, and stacking weights.
     """
     if pipeline_kwargs is None:
         pipeline_kwargs = {}
 
     if sample_size is not None:
-        idx = np.random.choice(len(X_train), size=min(sample_size, len(X_train)), replace=False)
+        idx = np.random.choice(len(X_train), size=min(
+            sample_size, len(X_train)), replace=False)
         X_train = X_train.iloc[idx]
         y_train = y_train.iloc[idx]
         print(f"  (Sample: {len(X_train):,} training samples)")
@@ -893,67 +1152,94 @@ def compare_models_single_split(X_train, y_train, X_val, y_val,
     preproc = _build_preproc_steps(pipeline_kwargs)
     t0 = time.time()
     X_train_proc = preproc.fit_transform(X_train, y_train)
-    X_val_proc   = preproc.transform(X_val)
-    print(f"  Done in {time.time()-t0:.1f}s | Features: {X_train_proc.shape[1]}")
+    X_val_proc = preproc.transform(X_val)
+    print(
+        f"  Done in {time.time()-t0:.1f}s | Features: {X_train_proc.shape[1]}")
 
     X_train_proc = np.nan_to_num(X_train_proc.astype(float))
-    X_val_proc   = np.nan_to_num(X_val_proc.astype(float))
+    X_val_proc = np.nan_to_num(X_val_proc.astype(float))
 
-    scaler       = StandardScaler()
-    X_tr_scaled  = scaler.fit_transform(X_train_proc)
+    scaler = StandardScaler()
+    X_tr_scaled = scaler.fit_transform(X_train_proc)
     X_val_scaled = scaler.transform(X_val_proc)
 
-    models  = get_models_for_comparison()
-    if selected_models:
-        models = {k: v for k, v in models.items() if k in selected_models}
+    models = get_models_for_comparison(
+        voting_mode=voting_mode,
+        voting_weights=voting_weights,
+        include_voting=include_voting,
+        include_stacking=include_stacking,
+        stacking_cv=stacking_cv,
+        stacking_passthrough=stacking_passthrough,
+    )
+    models = _filter_selected_models(models, selected_models)
+    if not models:
+        raise ValueError("No models selected. Check --models spelling.")
+
     results = []
 
     print("\n" + "="*60)
-    print("MODEL COMPARISON — single split")
+    print("MODEL COMPARISON - single split")
     print("Primary metric: Accuracy | Secondary: MCC")
     print("="*60)
 
     for name, (clf, needs_scaling) in models.items():
-        X_tr_  = X_tr_scaled  if needs_scaling else X_train_proc
+        X_tr_ = X_tr_scaled if needs_scaling else X_train_proc
         X_val_ = X_val_scaled if needs_scaling else X_val_proc
 
         print(f"\n  Training: {name} ...", end=' ', flush=True)
         t0 = time.time()
         try:
-            # XGBoost requires labels 0,1,2 — shift damage_grade 1,2,3 → 0,1,2
-            y_train_fit = y_train - 1 if isinstance(clf, XGBClassifier) else y_train
-            clf.fit(X_tr_, y_train_fit)
+            model = clone(clf)
+
+            # XGBoost requires labels 0,1,2 - shift damage_grade 1,2,3 -> 0,1,2.
+            y_train_fit = y_train - \
+                1 if isinstance(model, XGBClassifier) else y_train
+            model.fit(X_tr_, y_train_fit)
             train_time = time.time() - t0
-            y_pred = clf.predict(X_val_)
-            # shift predictions back for XGBoost
-            if isinstance(clf, XGBClassifier):
+            y_pred = model.predict(X_val_)
+
+            # Shift predictions back for standalone XGBoost.
+            if isinstance(model, XGBClassifier):
                 y_pred = y_pred + 1
+
             acc = accuracy_score(y_val, y_pred)
             mcc = matthews_corrcoef(y_val, y_pred)
+
+            stacking_weight_summary = ''
+            if isinstance(model, StackingClassifier):
+                weight_df = get_stacking_model_weights(model)
+                stacking_weight_summary = format_stacking_weights(weight_df)
+
             results.append({
-                'Model':   name,
-                'Acc':     round(acc, 4),
-                'MCC':     round(mcc, 4),
-                'Time':    f"{train_time:.1f}s",
-                'Status':  '✓'
+                'Model':            name,
+                'Acc':              round(acc, 4),
+                'MCC':              round(mcc, 4),
+                'Time':             f"{train_time:.1f}s",
+                'Stacking weights': stacking_weight_summary,
+                'Status':           'OK'
             })
-            print(f"Acc={acc:.4f}  MCC={mcc:.4f}  ({train_time:.1f}s)")
+
+            extra = f" | Stack weights: {stacking_weight_summary}" if stacking_weight_summary else ''
+            print(f"Acc={acc:.4f}  MCC={mcc:.4f}  ({train_time:.1f}s){extra}")
+
         except Exception as e:
             results.append({
-                'Model':  name,
-                'Acc':    None,
-                'MCC':    None,
-                'Time':   f"{time.time()-t0:.1f}s",
-                'Status': f'ERROR: {str(e)[:50]}'
+                'Model':            name,
+                'Acc':              None,
+                'MCC':              None,
+                'Time':             f"{time.time()-t0:.1f}s",
+                'Stacking weights': '',
+                'Status':           f'ERROR: {str(e)[:80]}'
             })
             print(f"ERROR: {e}")
 
     df = pd.DataFrame(results)
-    df_sorted = df.sort_values('Acc', ascending=False, na_position='last').reset_index(drop=True)
+    df_sorted = df.sort_values(
+        'Acc', ascending=False, na_position='last').reset_index(drop=True)
     df_sorted.index += 1
 
     print("\n\n" + "="*60)
-    print("RESULTS — sorted by Accuracy")
+    print("RESULTS - sorted by Accuracy")
     print("="*60)
     print(df_sorted.to_string())
     print("="*60)
@@ -966,25 +1252,31 @@ def compare_models_single_split(X_train, y_train, X_val, y_val,
 
 def compare_models(X_trainval, y_trainval,
                    pipeline_kwargs=None, n_cv_splits=5, sample_size=None,
-                   selected_models=None):
+                   selected_models=None, voting_mode='soft',
+                   voting_weights=None, include_voting=True,
+                   include_stacking=True, stacking_cv=5,
+                   stacking_passthrough=False):
     """
     Runs cross-validation on the full training data for each model.
 
     Data flow:
-        X_trainval (260k) → 5-Fold CV
-        Each fold: 208k train, 52k val → Score
-        → mean Accuracy and MCC across 5 folds
+        X_trainval (260k) -> K-Fold CV
+        Each fold: train fold -> validation fold -> score
+        -> mean Accuracy and MCC across folds
 
     Parameters
     ----------
     X_trainval, y_trainval : full training data (raw, before preprocessing)
     pipeline_kwargs        : pipeline configuration dict
     n_cv_splits            : number of CV folds (default: 5)
-    sample_size            : optional — use only N samples (faster testing)
+    sample_size            : optional - use only N samples (faster testing)
+    voting_mode            : {'soft', 'hard'} - mode for VotingClassifier
+    voting_weights         : optional list of 3 floats for rf,lgbm,catboost
 
     Returns
     -------
-    pd.DataFrame with mean Accuracy, mean MCC, std, and training time per model
+    pd.DataFrame with mean Accuracy, mean MCC, std, training time, and
+    average stacking weights across folds.
     """
 
     if pipeline_kwargs is None:
@@ -1013,14 +1305,24 @@ def compare_models(X_trainval, y_trainval,
 
     # Optional: subsample X_trainval for faster testing
     if sample_size is not None:
-        idx = np.random.choice(len(X_trainval), size=min(sample_size, len(X_trainval)), replace=False)
+        idx = np.random.choice(len(X_trainval), size=min(
+            sample_size, len(X_trainval)), replace=False)
         X_trainval = X_trainval.iloc[idx]
         y_trainval = y_trainval.iloc[idx]
         print(f"  (Sample: {len(X_trainval):,} of total training samples)")
 
-    models  = get_models_for_comparison()
-    if selected_models:
-        models = {k: v for k, v in models.items() if k in selected_models}
+    models = get_models_for_comparison(
+        voting_mode=voting_mode,
+        voting_weights=voting_weights,
+        include_voting=include_voting,
+        include_stacking=include_stacking,
+        stacking_cv=stacking_cv,
+        stacking_passthrough=stacking_passthrough,
+    )
+    models = _filter_selected_models(models, selected_models)
+    if not models:
+        raise ValueError("No models selected. Check --models spelling.")
+
     results = []
 
     kf = KFold(n_splits=n_cv_splits, shuffle=True, random_state=42)
@@ -1032,8 +1334,9 @@ def compare_models(X_trainval, y_trainval,
 
     for name, (clf, needs_scaling) in models.items():
         print(f"\n  Model: {name}")
-        fold_acc  = []
-        fold_mcc  = []
+        fold_acc = []
+        fold_mcc = []
+        fold_stacking_weights = []
         t0 = time.time()
 
         try:
@@ -1041,32 +1344,42 @@ def compare_models(X_trainval, y_trainval,
                 # Split into fold train / fold val
                 X_fold_train = X_trainval.iloc[train_idx]
                 y_fold_train = y_trainval.iloc[train_idx]
-                X_fold_val   = X_trainval.iloc[val_idx]
-                y_fold_val   = y_trainval.iloc[val_idx]
+                X_fold_val = X_trainval.iloc[val_idx]
+                y_fold_val = y_trainval.iloc[val_idx]
 
                 # Preprocessing: fit ONLY on fold train (no leakage)
                 preproc = _build_preproc_steps(pipeline_kwargs)
-                X_fold_train_proc = preproc.fit_transform(X_fold_train, y_fold_train)
-                X_fold_val_proc   = preproc.transform(X_fold_val)
+                X_fold_train_proc = preproc.fit_transform(
+                    X_fold_train, y_fold_train)
+                X_fold_val_proc = preproc.transform(X_fold_val)
 
                 # Ensure numeric
-                X_fold_train_proc = np.nan_to_num(X_fold_train_proc.astype(float))
-                X_fold_val_proc   = np.nan_to_num(X_fold_val_proc.astype(float))
+                X_fold_train_proc = np.nan_to_num(
+                    X_fold_train_proc.astype(float))
+                X_fold_val_proc = np.nan_to_num(X_fold_val_proc.astype(float))
 
                 # Apply scaling if needed
                 if needs_scaling:
                     scaler = StandardScaler()
                     X_fold_train_proc = scaler.fit_transform(X_fold_train_proc)
-                    X_fold_val_proc   = scaler.transform(X_fold_val_proc)
+                    X_fold_val_proc = scaler.transform(X_fold_val_proc)
 
-                # Train and evaluate
-                clf_fold = type(clf)(**clf.get_params())  # fresh copy per fold
-                # XGBoost requires labels 0,1,2 — shift damage_grade 1,2,3 → 0,1,2
-                y_fold_train_fit = y_fold_train - 1 if isinstance(clf_fold, XGBClassifier) else y_fold_train
+                # Train and evaluate. clone() supports meta-estimators such as
+                # VotingClassifier and StackingClassifier more reliably than
+                # type(clf)(**clf.get_params()).
+                clf_fold = clone(clf)
+
+                # XGBoost requires labels 0,1,2 - shift damage_grade 1,2,3 -> 0,1,2.
+                y_fold_train_fit = y_fold_train - \
+                    1 if isinstance(clf_fold, XGBClassifier) else y_fold_train
                 clf_fold.fit(X_fold_train_proc, y_fold_train_fit)
                 y_pred = clf_fold.predict(X_fold_val_proc)
                 if isinstance(clf_fold, XGBClassifier):
                     y_pred = y_pred + 1
+
+                if isinstance(clf_fold, StackingClassifier):
+                    weight_df = get_stacking_model_weights(clf_fold)
+                    fold_stacking_weights.append(weight_df)
 
                 fold_acc.append(accuracy_score(y_fold_val, y_pred))
                 fold_mcc.append(matthews_corrcoef(y_fold_val, y_pred))
@@ -1076,43 +1389,53 @@ def compare_models(X_trainval, y_trainval,
 
             train_time = time.time() - t0
             mean_acc = np.mean(fold_acc)
-            std_acc  = np.std(fold_acc)
+            std_acc = np.std(fold_acc)
             mean_mcc = np.mean(fold_mcc)
-            std_mcc  = np.std(fold_mcc)
+            std_mcc = np.std(fold_mcc)
+            avg_stacking_weights = average_stacking_weights(
+                fold_stacking_weights)
+            stacking_weight_summary = format_stacking_weights(
+                avg_stacking_weights)
 
-            print(f"  → Mean  Acc={mean_acc:.4f} ± {std_acc:.4f}  "
-                  f"MCC={mean_mcc:.4f} ± {std_mcc:.4f}  ({train_time:.1f}s total)")
+            print(f"  Mean  Acc={mean_acc:.4f} +/- {std_acc:.4f}  "
+                  f"MCC={mean_mcc:.4f} +/- {std_mcc:.4f}  ({train_time:.1f}s total)")
+            if stacking_weight_summary:
+                print(
+                    f"  Average stacking contribution: {stacking_weight_summary}")
 
             results.append({
-                'Model':         name,
-                'Acc (mean)':    round(mean_acc, 4),
-                'Acc (std)':     round(std_acc, 4),
-                'MCC (mean)':    round(mean_mcc, 4),
-                'MCC (std)':     round(std_mcc, 4),
-                'Time':          f"{train_time:.1f}s",
-                'Status':        '✓'
+                'Model':            name,
+                'Acc (mean)':       round(mean_acc, 4),
+                'Acc (std)':        round(std_acc, 4),
+                'MCC (mean)':       round(mean_mcc, 4),
+                'MCC (std)':        round(std_mcc, 4),
+                'Time':             f"{train_time:.1f}s",
+                'Stacking weights': stacking_weight_summary,
+                'Status':           'OK'
             })
 
         except Exception as e:
             train_time = time.time() - t0
             results.append({
-                'Model':         name,
-                'Acc (mean)':    None,
-                'Acc (std)':     None,
-                'MCC (mean)':    None,
-                'MCC (std)':     None,
-                'Time':          f"{train_time:.1f}s",
-                'Status':        f'ERROR: {str(e)[:50]}'
+                'Model':            name,
+                'Acc (mean)':       None,
+                'Acc (std)':        None,
+                'MCC (mean)':       None,
+                'MCC (std)':        None,
+                'Time':             f"{train_time:.1f}s",
+                'Stacking weights': '',
+                'Status':           f'ERROR: {str(e)[:80]}'
             })
             print(f"  ERROR: {e}")
 
-    # Results table — sorted by Accuracy (primary metric)
+    # Results table - sorted by Accuracy (primary metric)
     df = pd.DataFrame(results)
-    df_sorted = df.sort_values('Acc (mean)', ascending=False, na_position='last').reset_index(drop=True)
+    df_sorted = df.sort_values(
+        'Acc (mean)', ascending=False, na_position='last').reset_index(drop=True)
     df_sorted.index += 1  # rank from 1
 
     print("\n\n" + "="*60)
-    print("RESULTS — sorted by Accuracy (primary metric)")
+    print("RESULTS - sorted by Accuracy (primary metric)")
     print("="*60)
     print(df_sorted.to_string())
     print("="*60)
@@ -1134,13 +1457,13 @@ def load_data():
 
     train_values = pd.read_csv('data/train_values.csv')
     train_labels = pd.read_csv('data/train_labels.csv')
-    test_values  = pd.read_csv('data/test_values.csv')
+    test_values = pd.read_csv('data/test_values.csv')
 
     test_ids = test_values['building_id'].values
 
     X_train = train_values.set_index('building_id')
     y_train = train_labels.set_index('building_id')['damage_grade']
-    X_test  = test_values.set_index('building_id')
+    X_test = test_values.set_index('building_id')
 
     print(f"Training samples: {len(X_train):,}")
     print(f"Test samples:     {len(X_test):,}")
@@ -1201,10 +1524,10 @@ def analyze_feature_importance(pipeline, top_n=15):
     print("FEATURE IMPORTANCE ANALYSIS")
     print("="*60)
 
-    classifier   = pipeline.named_steps['classifier']
-    col_aligner  = pipeline.named_steps['col_aligner']
+    classifier = pipeline.named_steps['classifier']
+    col_aligner = pipeline.named_steps['col_aligner']
     feature_names = col_aligner.train_columns_
-    importances   = classifier.feature_importances_
+    importances = classifier.feature_importances_
 
     df = pd.DataFrame({
         'feature': feature_names,
@@ -1225,8 +1548,10 @@ def analyze_feature_importance(pipeline, top_n=15):
 
     print(f"\nTotal features:          {len(feature_names)}")
     print(f"Non-zero importance:     {(importances > 0).sum()}")
-    print(f"Top-5 cumulative importance:    {df.head(5)['importance'].sum():.2%}")
-    print(f"Top-10 cumulative importance:  {df.head(10)['importance'].sum():.2%}")
+    print(
+        f"Top-5 cumulative importance:    {df.head(5)['importance'].sum():.2%}")
+    print(
+        f"Top-10 cumulative importance:  {df.head(10)['importance'].sum():.2%}")
     print("="*60 + "\n")
 
     return df
@@ -1253,13 +1578,21 @@ def save_submission(predictions, building_ids, path='outputs/Team2_prediction.cs
 # Deep error analysis for the 4 ensemble models (RF, LGBM, XGB, CatBoost)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def analyze_errors(X_train_full, y_train_full, pipeline_kwargs, sample_size=None):
+def analyze_errors(X_train_full, y_train_full, pipeline_kwargs, sample_size=None,
+                   voting_mode='soft', voting_weights=None, include_voting=True,
+                   include_stacking=True, stacking_cv=5,
+                   stacking_passthrough=False):
     from sklearn.metrics import confusion_matrix, classification_report
 
-    ENSEMBLE_MODELS = ['Random Forest', 'LightGBM', 'XGBoost', 'CatBoost']
+    analysis_model_names = ['Random Forest', 'LightGBM', 'XGBoost', 'CatBoost']
+    if include_voting:
+        analysis_model_names.append(f"Voting ({voting_mode.lower()})")
+    if include_stacking:
+        analysis_model_names.append('Stacking')
 
     if sample_size is not None:
-        idx = np.random.choice(len(X_train_full), size=min(sample_size, len(X_train_full)), replace=False)
+        idx = np.random.choice(len(X_train_full), size=min(
+            sample_size, len(X_train_full)), replace=False)
         X_train_full = X_train_full.iloc[idx]
         y_train_full = y_train_full.iloc[idx]
         print(f"  (Sample mode: {len(X_train_full):,} samples)")
@@ -1272,38 +1605,68 @@ def analyze_errors(X_train_full, y_train_full, pipeline_kwargs, sample_size=None
     print("PREPROCESSING (once for all models)")
     preproc = _build_preproc_steps(pipeline_kwargs)
     t0 = time.time()
-    X_tr_proc  = preproc.fit_transform(X_tr, y_tr)
+    X_tr_proc = preproc.fit_transform(X_tr, y_tr)
     X_val_proc = preproc.transform(X_val)
     print(f"  Done in {time.time()-t0:.1f}s | Features: {X_tr_proc.shape[1]}")
 
-    col_aligner   = preproc.named_steps.get('col_aligner')
+    col_aligner = preproc.named_steps.get('col_aligner')
     feature_names = (col_aligner.train_columns_ if col_aligner is not None
                      else [f"f{i}" for i in range(X_tr_proc.shape[1])])
 
-    X_tr_proc  = np.nan_to_num(X_tr_proc.astype(float))
+    X_tr_proc = np.nan_to_num(X_tr_proc.astype(float))
     X_val_proc = np.nan_to_num(X_val_proc.astype(float))
 
-    all_models    = get_models_for_comparison()
-    ensemble_clfs = {k: v[0] for k, v in all_models.items() if k in ENSEMBLE_MODELS}
-    predictions   = {}
-    importances   = {}
+    scaler = StandardScaler()
+    X_tr_scaled = scaler.fit_transform(X_tr_proc)
+    X_val_scaled = scaler.transform(X_val_proc)
 
-    print("\nTRAINING ENSEMBLE MODELS")
-    for name, clf in ensemble_clfs.items():
+    all_models = get_models_for_comparison(
+        voting_mode=voting_mode,
+        voting_weights=voting_weights,
+        include_voting=include_voting,
+        include_stacking=include_stacking,
+        stacking_cv=stacking_cv,
+        stacking_passthrough=stacking_passthrough,
+    )
+    analysis_models = {k: v for k,
+                       v in all_models.items() if k in analysis_model_names}
+
+    predictions = {}
+    importances = {}
+    stacking_weight_tables = []
+
+    print("\nTRAINING ANALYSIS MODELS")
+    for name, (clf, needs_scaling) in analysis_models.items():
+        X_tr_model = X_tr_scaled if needs_scaling else X_tr_proc
+        X_val_model = X_val_scaled if needs_scaling else X_val_proc
+
         print(f"  {name} ...", end=' ', flush=True)
         t0 = time.time()
-        y_tr_fit = y_tr - 1 if isinstance(clf, XGBClassifier) else y_tr
-        clf.fit(X_tr_proc, y_tr_fit)
-        y_pred = clf.predict(X_val_proc)
-        if isinstance(clf, XGBClassifier):
+        model = clone(clf)
+        y_tr_fit = y_tr - 1 if isinstance(model, XGBClassifier) else y_tr
+        model.fit(X_tr_model, y_tr_fit)
+        y_pred = model.predict(X_val_model)
+        if isinstance(model, XGBClassifier):
             y_pred = y_pred + 1
         y_pred = np.asarray(y_pred).ravel()
         acc = accuracy_score(y_val, y_pred)
         mcc = matthews_corrcoef(y_val, y_pred)
-        print(f"Acc={acc:.4f}  MCC={mcc:.4f}  ({time.time()-t0:.1f}s)")
+
+        if isinstance(model, StackingClassifier):
+            weight_df = get_stacking_model_weights(model)
+            if not weight_df.empty:
+                weight_df.insert(0, 'Context', 'single_split_analysis')
+                stacking_weight_tables.append(weight_df)
+                print(
+                    f"Acc={acc:.4f}  MCC={mcc:.4f}  ({time.time()-t0:.1f}s) | Stack weights: {format_stacking_weights(weight_df)}")
+            else:
+                print(f"Acc={acc:.4f}  MCC={mcc:.4f}  ({time.time()-t0:.1f}s)")
+        else:
+            print(f"Acc={acc:.4f}  MCC={mcc:.4f}  ({time.time()-t0:.1f}s)")
+
         predictions[name] = y_pred
-        if hasattr(clf, 'feature_importances_'):
-            importances[name] = clf.feature_importances_
+        if hasattr(model, 'feature_importances_'):
+            importances[name] = model.feature_importances_
 
     # STEP 1: Confusion Matrix + Per-Class Metrics
     print("\nSTEP 1: CONFUSION MATRIX + PER-CLASS METRICS")
@@ -1315,16 +1678,19 @@ def analyze_errors(X_train_full, y_train_full, pipeline_kwargs, sample_size=None
         for i, g in enumerate([1, 2, 3]):
             row = "  ".join(f"{cm[i, j]:>7,}" for j in range(3))
             print(f"  True {g}    {row}")
-        print(f"\n{classification_report(y_val, y_pred, labels=[1,2,3], target_names=['Grade 1','Grade 2','Grade 3'], digits=4)}")
+        print(
+            f"\n{classification_report(y_val, y_pred, labels=[1,2,3], target_names=['Grade 1','Grade 2','Grade 3'], digits=4)}")
         cm_nodiag = cm.copy()
         np.fill_diagonal(cm_nodiag, 0)
         wt, wp = np.unravel_index(cm_nodiag.argmax(), cm_nodiag.shape)
-        print(f"  Biggest confusion: Grade {wt+1} predicted as Grade {wp+1} ({cm_nodiag[wt, wp]:,} samples)")
+        print(
+            f"  Biggest confusion: Grade {wt+1} predicted as Grade {wp+1} ({cm_nodiag[wt, wp]:,} samples)")
 
     # STEP 2: Hard Cases
-    print("\nSTEP 2: DISAGREEMENT ANALYSIS — HARD CASES")
-    y_val_arr   = y_val.values
-    wrong_masks = {name: (pred != y_val_arr) for name, pred in predictions.items()}
+    print("\nSTEP 2: DISAGREEMENT ANALYSIS - HARD CASES")
+    y_val_arr = y_val.values
+    wrong_masks = {name: (pred != y_val_arr)
+                   for name, pred in predictions.items()}
     print("\n  Per-model error rate:")
     for name, mask in wrong_masks.items():
         print(f"    {name:<20} {mask.mean():.2%}  ({mask.sum():,} wrong)")
@@ -1339,9 +1705,12 @@ def analyze_errors(X_train_full, y_train_full, pipeline_kwargs, sample_size=None
         any_wrong = any_wrong | mask
     easy_mask = ~any_wrong
 
-    print(f"\n  Wrong by ALL 4 models:   {n_hard:,} ({n_hard/len(y_val_arr):.2%})")
-    print(f"  Correct by ALL 4 models: {easy_mask.sum():,} ({easy_mask.mean():.2%})")
-    print("\n  Grade distribution — hard cases vs. all val:")
+    n_models = len(predictions)
+    print(
+        f"\n  Wrong by ALL {n_models} models:   {n_hard:,} ({n_hard/len(y_val_arr):.2%})")
+    print(
+        f"  Correct by ALL {n_models} models: {easy_mask.sum():,} ({easy_mask.mean():.2%})")
+    print("\n  Grade distribution - hard cases vs. all val:")
     for g in [1, 2, 3]:
         hp = (y_val_arr[hard_mask] == g).mean() if n_hard > 0 else 0
         ap = (y_val_arr == g).mean()
@@ -1350,12 +1719,19 @@ def analyze_errors(X_train_full, y_train_full, pipeline_kwargs, sample_size=None
     hard_cases_df = X_val.iloc[hard_mask].copy()
     hard_cases_df['true_grade'] = y_val_arr[hard_mask]
     for name, pred in predictions.items():
-        hard_cases_df[f'pred_{name.replace(" ", "_").lower()}'] = pred[hard_mask]
+        safe_name = (
+            name.replace(' ', '_')
+                .replace('(', '')
+                .replace(')', '')
+                .replace('-', '_')
+                .lower()
+        )
+        hard_cases_df[f'pred_{safe_name}'] = pred[hard_mask]
 
     # STEP 3: Feature Profile
-    print("\nSTEP 3: FEATURE PROFILE — HARD vs. CORRECT")
+    print("\nSTEP 3: FEATURE PROFILE - HARD vs. CORRECT")
     numeric_features = [c for c in ['age', 'height_percentage', 'area_percentage',
-                                     'count_floors_pre_eq', 'count_families'] if c in X_val.columns]
+                                    'count_floors_pre_eq', 'count_families'] if c in X_val.columns]
     print(f"  {'Feature':<30}  {'Hard':>10}  {'Correct':>10}  {'Diff':>8}")
     for feat in numeric_features:
         hm = X_val.iloc[hard_mask][feat].mean()
@@ -1363,34 +1739,54 @@ def analyze_errors(X_train_full, y_train_full, pipeline_kwargs, sample_size=None
         print(f"  {feat:<30}  {hm:>10.2f}  {em:>10.2f}  {hm-em:>+8.2f}")
 
     # STEP 4: Feature Importance
-    print("\nSTEP 4: FEATURE IMPORTANCE — TOP 15 PER MODEL")
-    importance_df = pd.DataFrame({'feature': feature_names})
-    for name, imp in importances.items():
-        importance_df[name] = imp
-    importance_df = importance_df.set_index('feature')
+    print("\nSTEP 4: FEATURE IMPORTANCE - TOP 15 PER MODEL")
+    if importances:
+        importance_df = pd.DataFrame({'feature': feature_names})
+        for name, imp in importances.items():
+            importance_df[name] = imp
+        importance_df = importance_df.set_index('feature')
 
-    top15 = {name: set(importance_df[name].sort_values(ascending=False).head(15).index)
-             for name in importances}
-    consensus = set.intersection(*top15.values()) if top15 else set()
-    print(f"\n  In Top 15 for ALL 4 models ({len(consensus)} features):")
-    for f in sorted(consensus):
-        print(f"    ✓  {f}")
+        top15 = {name: set(importance_df[name].sort_values(ascending=False).head(15).index)
+                 for name in importances}
+        consensus = set.intersection(*top15.values()) if top15 else set()
+        print(
+            f"\n  In Top 15 for ALL feature-importance models ({len(consensus)} features):")
+        for f in sorted(consensus):
+            print(f"    {f}")
 
-    for name in importances:
-        print(f"\n  {name} — Top 15:")
-        ranked = importance_df[name].sort_values(ascending=False).head(15)
-        for rank, (feat, imp) in enumerate(ranked.items(), 1):
-            marker = '★' if feat in consensus else ' '
-            print(f"    {rank:>2}. {feat:<40} {imp:>10.6f} {marker}")
+        for name in importances:
+            print(f"\n  {name} - Top 15:")
+            ranked = importance_df[name].sort_values(ascending=False).head(15)
+            for rank, (feat, imp) in enumerate(ranked.items(), 1):
+                marker = '*' if feat in consensus else ' '
+                print(f"    {rank:>2}. {feat:<40} {imp:>10.6f} {marker}")
+    else:
+        importance_df = pd.DataFrame()
+        print("  No native feature_importances_ available for selected models.")
+
+    # STEP 5: Stacking weights
+    stacking_weights_df = pd.concat(
+        stacking_weight_tables, ignore_index=True) if stacking_weight_tables else pd.DataFrame()
+    if not stacking_weights_df.empty:
+        print("\nSTEP 5: STACKING MODEL CONTRIBUTION")
+        print(stacking_weights_df.to_string(index=False))
 
     out_dir = Path('outputs')
     out_dir.mkdir(parents=True, exist_ok=True)
     hard_cases_df.to_csv(out_dir / 'hard_cases.csv')
-    importance_df.reset_index().to_csv(out_dir / 'feature_importance_comparison.csv', index=False)
     print(f"\n  Saved: outputs/hard_cases.csv ({n_hard:,} rows)")
-    print(f"  Saved: outputs/feature_importance_comparison.csv")
 
-    return hard_cases_df, importance_df
+    if not importance_df.empty:
+        importance_df.reset_index().to_csv(
+            out_dir / 'feature_importance_comparison.csv', index=False)
+        print("  Saved: outputs/feature_importance_comparison.csv")
+
+    if not stacking_weights_df.empty:
+        stacking_weights_df.to_csv(
+            out_dir / 'stacking_weights.csv', index=False)
+        print("  Saved: outputs/stacking_weights.csv")
+
+    return hard_cases_df, importance_df, stacking_weights_df
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1407,12 +1803,28 @@ def main():
     parser.add_argument('--sample', type=int, default=None,
                         help='Use only N samples for CV (faster testing, e.g. --sample 20000)')
     parser.add_argument('--models', type=str, default=None,
-                        help='Comma-separated list of models to compare, e.g. --models "Decision Tree,Random Forest,LightGBM"'
+                        help='Comma-separated list of models to compare, e.g. --models "Random Forest,Voting,Stacking"'
                              ' | Available: Decision Tree, Random Forest, LightGBM, XGBoost, CatBoost,'
-                             ' k-Nearest Neighbors, Logistic Regression, Naive Bayes, SVM (Linear)')
+                             ' k-Nearest Neighbors, Logistic Regression, Naive Bayes, SVM (Linear), Voting, Stacking')
+    parser.add_argument('--voting-mode', type=str, default='soft', choices=['soft', 'hard'],
+                        help='VotingClassifier mode: soft averages predicted probabilities; hard uses majority vote')
+    parser.add_argument('--voting-weights', type=str, default=None,
+                        help='Optional voting weights in order rf,lgbm,catboost, e.g. "1,1,2"')
+    parser.add_argument('--no-voting', action='store_true',
+                        help='Exclude VotingClassifier from model comparison and analysis')
+    parser.add_argument('--no-stacking', action='store_true',
+                        help='Exclude StackingClassifier from model comparison and analysis')
+    parser.add_argument('--stacking-cv', type=int, default=5,
+                        help='Internal CV folds used by StackingClassifier')
+    parser.add_argument('--stacking-passthrough', action='store_true',
+                        help='Let the stacking final estimator also see original preprocessed features')
     parser.add_argument('--analyze', action='store_true',
-                        help='Deep error analysis — fixed to the 4 ensemble models (RF, LGBM, XGB, CatBoost)')
+                        help='Deep error analysis including RF, LGBM, XGB, CatBoost, Voting, and Stacking')
     args = parser.parse_args()
+
+    voting_weights = parse_voting_weights(args.voting_weights)
+    include_voting = not args.no_voting
+    include_stacking = not args.no_stacking
 
     print("\n" + "="*60)
     print("EARTHQUAKE DAMAGE PREDICTION PIPELINE (sklearn)")
@@ -1449,11 +1861,17 @@ def main():
 
     # ── --analyze: deep error analysis ───────────────────────────────────
     if args.analyze:
-        print(">>> Deep Error Analysis — 4 Ensemble Models (RF, LGBM, XGB, CatBoost)")
+        print(">>> Deep Error Analysis - RF, LGBM, XGB, CatBoost, Voting, and Stacking")
         analyze_errors(
             X_train_full, y_train_full,
             pipeline_kwargs=pipeline_kwargs,
             sample_size=getattr(args, 'sample', None),
+            voting_mode=args.voting_mode,
+            voting_weights=voting_weights,
+            include_voting=include_voting,
+            include_stacking=include_stacking,
+            stacking_cv=args.stacking_cv,
+            stacking_passthrough=args.stacking_passthrough,
         )
         return
 
@@ -1476,7 +1894,13 @@ def main():
                 X_tr, y_tr, X_val, y_val,
                 pipeline_kwargs=pipeline_kwargs,
                 sample_size=args.sample,
-                selected_models=selected_models
+                selected_models=selected_models,
+                voting_mode=args.voting_mode,
+                voting_weights=voting_weights,
+                include_voting=include_voting,
+                include_stacking=include_stacking,
+                stacking_cv=args.stacking_cv,
+                stacking_passthrough=args.stacking_passthrough,
             )
         else:
             print(">>> Model Comparison — 5-Fold CV on full training data (260k)")
@@ -1485,7 +1909,13 @@ def main():
                 pipeline_kwargs=pipeline_kwargs,
                 n_cv_splits=5,
                 sample_size=args.sample,
-                selected_models=selected_models
+                selected_models=selected_models,
+                voting_mode=args.voting_mode,
+                voting_weights=voting_weights,
+                include_voting=include_voting,
+                include_stacking=include_stacking,
+                stacking_cv=args.stacking_cv,
+                stacking_passthrough=args.stacking_passthrough,
             )
         out_path = Path('outputs/model_comparison.csv')
         out_path.parent.mkdir(parents=True, exist_ok=True)
