@@ -4,6 +4,9 @@ cat > .gitignore << 'EOF'
 data/
 */data/
 
+# CatBoost training artifacts
+catboost_info/
+
 # Output/Prediction files
 *_prediction.csv
 Team*_prediction.csv

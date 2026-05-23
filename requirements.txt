@@ -4,3 +4,4 @@ scikit-learn
 lightgbm
 xgboost
 catboost
+imbalanced-learn

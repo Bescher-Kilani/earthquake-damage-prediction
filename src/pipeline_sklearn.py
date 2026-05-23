@@ -1790,6 +1790,393 @@ def analyze_errors(X_train_full, y_train_full, pipeline_kwargs, sample_size=None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Week 05: compare_sampling_strategies()
+# Compares all sampling strategies on RF, LGBM, XGB, CatBoost
+# Metrics: Accuracy (primary), MCC (secondary), Grade-1 Recall
+# ─────────────────────────────────────────────────────────────────────────────
+
+def compare_sampling_strategies(X_train_full, y_train_full,
+                                 pipeline_kwargs=None,
+                                 sample_size=None,
+                                 use_cv=True,
+                                 n_cv_splits=5,
+                                 random_state=42):
+    """
+    Compares all sampling strategies for Week 05.
+
+    Strategies:
+      1. Baseline            — no sampling
+      2. class_weight        — balanced class weights inside the model
+      3. SMOTE               — synthetic oversampling
+      4. RandomUnderSampler  — undersampling of the majority class
+      5. SMOTE + Under       — mix of over- and undersampling
+      6. EasyEnsemble        — ensemble-based undersampling
+      7. ClusterCentroids    — clustering-based undersampling
+      8. ROSE                — random oversampling examples
+
+    Models: RF, LGBM, XGB, CatBoost
+    Evaluation: 80/20 single split (faster) or n_cv_splits-Fold CV (robust)
+    """
+    from sklearn.metrics import classification_report
+    from scipy.optimize import minimize_scalar
+
+    try:
+        from imblearn.over_sampling import SMOTE
+        from imblearn.under_sampling import RandomUnderSampler, ClusterCentroids
+        from imblearn.combine import SMOTETomek
+        from imblearn.ensemble import EasyEnsembleClassifier, RUSBoostClassifier
+        from imblearn.over_sampling import RandomOverSampler
+    except ImportError:
+        print("ERROR: imbalanced-learn is not installed!")
+        print("  pip install imbalanced-learn")
+        return pd.DataFrame()
+
+    if pipeline_kwargs is None:
+        pipeline_kwargs = {}
+
+    np.random.seed(random_state)
+
+    # ── Optionally subsample training data for faster testing ────────────────
+    if sample_size is not None:
+        idx = np.random.choice(len(X_train_full),
+                               size=min(sample_size, len(X_train_full)),
+                               replace=False)
+        X_train_full = X_train_full.iloc[idx]
+        y_train_full = y_train_full.iloc[idx]
+        print(f"  (Subsampled to {len(X_train_full):,} training samples)")
+
+    print("\n" + "="*60)
+    print("WEEK 05 — SAMPLING STRATEGY COMPARISON")
+    print("Primary: Accuracy | Secondary: MCC | Also: Grade-1 Recall")
+    print("="*60)
+
+    # ── For single-split mode: preprocess once outside the strategy loop ─────
+    # For CV mode: preprocessing happens inside each fold to prevent leakage
+    print("\n[1/2] Preparing data...")
+    preproc = _build_preproc_steps(pipeline_kwargs)
+
+    if use_cv:
+        # Preprocessing will be done per fold inside the loop
+        pass
+    else:
+        # Single split: fit preprocessor on train, apply to both splits
+        X_tr_raw, X_val_raw, y_tr_raw, y_val_raw = train_test_split(
+            X_train_full, y_train_full,
+            test_size=0.2, random_state=random_state, stratify=y_train_full
+        )
+        preproc.fit(X_tr_raw, y_tr_raw)
+        # nan_to_num replaces any remaining NaNs with 0 (safe fallback)
+        X_tr_proc = np.nan_to_num(preproc.transform(X_tr_raw).astype(float))
+        X_val_proc = np.nan_to_num(preproc.transform(X_val_raw).astype(float))
+        # Convert pandas Series to numpy arrays (required by imbalanced-learn)
+        y_tr = y_tr_raw.values
+        y_val = y_val_raw.values
+
+    print("[2/2] Starting strategy comparison...\n")
+
+    # ── Classifier factory: creates fresh instances for each strategy/fold ───
+    def make_classifiers(class_weight_mode=None):
+        """Returns RF, LGBM, XGB, CatBoost — optionally with class_weight."""
+        cw = 'balanced' if class_weight_mode == 'balanced' else None
+        clfs = {
+            'RF':       RandomForestClassifier(
+                            n_estimators=200, max_depth=15,
+                            random_state=random_state, n_jobs=-1,
+                            class_weight=cw),
+            'LGBM':     LGBMClassifier(
+                            n_estimators=300, learning_rate=0.05,
+                            num_leaves=63, random_state=random_state,
+                            n_jobs=-1, verbose=-1,
+                            class_weight=cw),
+            'XGB':      XGBClassifier(
+                            n_estimators=300, learning_rate=0.05,
+                            max_depth=6, random_state=random_state,
+                            n_jobs=-1, eval_metric='mlogloss',
+                            verbosity=0),
+            'CatBoost': CatBoostClassifier(
+                            iterations=300, learning_rate=0.05,
+                            depth=6, random_seed=random_state,
+                            verbose=0,
+                            auto_class_weights='Balanced' if cw else None),
+        }
+        return clfs
+
+    def eval_single_split(X_tr_p, y_tr_p, X_val_p, y_val_p, clfs):
+        """Trains and evaluates all 4 models on one train/val split."""
+        rows = []
+        for clf_name, clf in clfs.items():
+            t0 = time.time()
+            try:
+                # XGBoost expects labels 0, 1, 2 — shift damage_grade 1,2,3 -> 0,1,2
+                if isinstance(clf, XGBClassifier):
+                    clf.fit(X_tr_p, y_tr_p - 1)
+                    y_pred = clf.predict(X_val_p) + 1
+                else:
+                    clf.fit(X_tr_p, y_tr_p)
+                    y_pred = clf.predict(X_val_p)
+
+                acc  = accuracy_score(y_val_p, y_pred)
+                mcc  = matthews_corrcoef(y_val_p, y_pred)
+                rep  = classification_report(y_val_p, y_pred,
+                                             labels=[1, 2, 3],
+                                             output_dict=True,
+                                             zero_division=0)
+                r1 = rep.get('1', rep.get(1, {})).get('recall', 0.0)
+                r3 = rep.get('3', rep.get(3, {})).get('recall', 0.0)
+                elapsed = time.time() - t0
+                rows.append({'model': clf_name, 'acc': acc, 'mcc': mcc,
+                             'grade1_recall': r1, 'grade3_recall': r3,
+                             'time': elapsed})
+            except Exception as e:
+                print(f"    ERROR in {clf_name}: {e}")
+                rows.append({'model': clf_name, 'acc': 0.0, 'mcc': 0.0,
+                             'grade1_recall': 0.0, 'grade3_recall': 0.0,
+                             'time': 0.0})
+        return rows
+
+    # ── Define all sampling strategies ───────────────────────────────────────
+    # Format: (strategy_name, sampler_or_None, use_class_weight,
+    #          is_ensemble_method, ensemble_factory_or_None)
+    strategies = []
+
+    # 1. Baseline — no sampling, no class weighting
+    strategies.append(('1. Baseline', None, False, False, None))
+
+    # 2. class_weight='balanced' — model adjusts loss weights internally
+    strategies.append(('2. class_weight=balanced', None, True, False, None))
+
+    # 3. SMOTE — creates synthetic minority samples as linear interpolations
+    strategies.append(('3. SMOTE', SMOTE(random_state=random_state), False, False, None))
+
+    # 4. RandomUnderSampler — randomly removes majority class samples
+    strategies.append(('4. RandomUnderSampler',
+                        RandomUnderSampler(random_state=random_state),
+                        False, False, None))
+
+    # 5. SMOTETomek — SMOTE oversampling + Tomek links undersampling combined
+    strategies.append(('5. SMOTE+Under (Mix)',
+                        SMOTETomek(random_state=random_state),
+                        False, False, None))
+
+    # 6. EasyEnsemble — trains multiple balanced subsets and combines predictions
+    def make_easy_ensemble():
+        return EasyEnsembleClassifier(
+            n_estimators=10, random_state=random_state, n_jobs=-1)
+    strategies.append(('6. EasyEnsemble', None, False, True, make_easy_ensemble))
+
+    # 7. ClusterCentroids — replaces majority class samples with cluster centroids
+    strategies.append(('7. ClusterCentroids',
+                        ClusterCentroids(random_state=random_state),
+                        False, False, None))
+
+    # 8. ROSE — random oversampling by sampling in the neighborhood of existing points
+    strategies.append(('8. ROSE (RandomOverSampler)',
+                        RandomOverSampler(random_state=random_state),
+                        False, False, None))
+
+    # ── Run all strategies and collect results ───────────────────────────────
+    all_results = []
+
+    for strat_name, sampler, use_cw, is_ensemble, ensemble_factory in strategies:
+        print(f"\n{'─'*55}")
+        print(f"  Strategy: {strat_name}")
+        print(f"{'─'*55}")
+
+        t_strat = time.time()
+
+        if use_cv:
+            kf = KFold(n_splits=n_cv_splits, shuffle=True,
+                       random_state=random_state)
+            fold_rows = []
+
+            for fold_i, (tr_idx, val_idx) in enumerate(
+                    kf.split(X_train_full), 1):
+                X_tr_f = X_train_full.iloc[tr_idx]
+                y_tr_f = y_train_full.iloc[tr_idx]
+                X_val_f = X_train_full.iloc[val_idx]
+                y_val_f = y_train_full.iloc[val_idx]
+
+                # Preprocess inside each fold to prevent data leakage
+                preproc_f = _build_preproc_steps(pipeline_kwargs)
+                X_tr_p = np.nan_to_num(
+                    preproc_f.fit_transform(X_tr_f, y_tr_f).astype(float))
+                X_val_p = np.nan_to_num(
+                    preproc_f.transform(X_val_f).astype(float))
+                y_tr_p = y_tr_f.values
+                y_val_p = y_val_f.values
+
+                # Apply sampler only to training data — never to validation!
+                if sampler is not None and not is_ensemble:
+                    try:
+                        X_tr_p, y_tr_p = sampler.fit_resample(X_tr_p, y_tr_p)
+                    except Exception as e:
+                        print(f"    Sampling error fold {fold_i}: {e}")
+
+                # Fresh classifiers per fold to avoid any state leakage
+                clfs = make_classifiers('balanced' if use_cw else None)
+                rows = eval_single_split(X_tr_p, y_tr_p,
+                                         X_val_p, y_val_p, clfs)
+                fold_rows.extend(rows)
+
+            # Average metrics across all folds
+            fold_df = pd.DataFrame(fold_rows)
+            agg = fold_df.groupby('model').agg(
+                acc=('acc', 'mean'),
+                mcc=('mcc', 'mean'),
+                grade1_recall=('grade1_recall', 'mean'),
+                grade3_recall=('grade3_recall', 'mean'),
+                time=('time', 'mean')
+            ).reset_index()
+
+            for _, row in agg.iterrows():
+                print(f"    {row['model']:<10} Acc={row['acc']:.4f}  "
+                      f"MCC={row['mcc']:.4f}  "
+                      f"G1-Recall={row['grade1_recall']:.3f}  "
+                      f"G3-Recall={row['grade3_recall']:.3f}  "
+                      f"({row['time']:.1f}s/fold)")
+                all_results.append({
+                    'strategy': strat_name,
+                    'model': row['model'],
+                    'accuracy': round(row['acc'], 4),
+                    'mcc': round(row['mcc'], 4),
+                    'grade1_recall': round(row['grade1_recall'], 4),
+                    'grade3_recall': round(row['grade3_recall'], 4),
+                    'time_s': round(row['time'], 1),
+                    'eval_mode': f'{n_cv_splits}-Fold CV'
+                })
+
+        else:
+            # Single split path
+            if is_ensemble and ensemble_factory is not None:
+                # EasyEnsemble has its own internal sampling — no separate sampler needed
+                t0 = time.time()
+                clf = ensemble_factory()
+                try:
+                    clf.fit(X_tr_proc, y_tr)
+                    y_pred = clf.predict(X_val_proc)
+                    acc  = accuracy_score(y_val, y_pred)
+                    mcc  = matthews_corrcoef(y_val, y_pred)
+                    rep  = classification_report(y_val, y_pred,
+                                                 labels=[1, 2, 3],
+                                                 output_dict=True,
+                                                 zero_division=0)
+                    r1 = rep.get('1', rep.get(1, {})).get('recall', 0.0)
+                    r3 = rep.get('3', rep.get(3, {})).get('recall', 0.0)
+                    elapsed = time.time() - t0
+                    print(f"    EasyEnsemble   Acc={acc:.4f}  MCC={mcc:.4f}  "
+                          f"G1-Recall={r1:.3f}  G3-Recall={r3:.3f}  ({elapsed:.1f}s)")
+                    all_results.append({
+                        'strategy': strat_name,
+                        'model': 'EasyEnsemble',
+                        'accuracy': round(acc, 4),
+                        'mcc': round(mcc, 4),
+                        'grade1_recall': round(r1, 4),
+                        'grade3_recall': round(r3, 4),
+                        'time_s': round(elapsed, 1),
+                        'eval_mode': 'single split'
+                    })
+                except Exception as e:
+                    print(f"    EasyEnsemble error: {e}")
+            else:
+                X_tr_use = X_tr_proc.copy()
+                y_tr_use = y_tr.copy()
+
+                if sampler is not None:
+                    try:
+                        X_tr_use, y_tr_use = sampler.fit_resample(
+                            X_tr_use, y_tr_use)
+                        print(f"    After sampling: {len(y_tr_use):,} samples | "
+                              f"classes: {dict(zip(*np.unique(y_tr_use, return_counts=True)))}")
+                    except Exception as e:
+                        print(f"    Sampling error: {e}")
+
+                clfs = make_classifiers('balanced' if use_cw else None)
+                rows = eval_single_split(X_tr_use, y_tr_use,
+                                         X_val_proc, y_val, clfs)
+                for row in rows:
+                    print(f"    {row['model']:<10} Acc={row['acc']:.4f}  "
+                          f"MCC={row['mcc']:.4f}  "
+                          f"G1-Recall={row['grade1_recall']:.3f}  "
+                          f"G3-Recall={row['grade3_recall']:.3f}  "
+                          f"({row['time']:.1f}s)")
+                    all_results.append({
+                        'strategy': strat_name,
+                        'model': row['model'],
+                        'accuracy': round(row['acc'], 4),
+                        'mcc': round(row['mcc'], 4),
+                        'grade1_recall': round(row['grade1_recall'], 4),
+                        'grade3_recall': round(row['grade3_recall'], 4),
+                        'time_s': round(row['time'], 1),
+                        'eval_mode': 'single split'
+                    })
+
+        print(f"  -> Strategy done in {time.time()-t_strat:.1f}s")
+
+    # ── Print results summary ────────────────────────────────────────────────
+    results_df = pd.DataFrame(all_results)
+
+    print("\n\n" + "="*80)
+    print("WEEK 05 — RESULTS SUMMARY")
+    print("Sorted by: Accuracy (primary), MCC (secondary)")
+    print("="*80)
+
+    # Average over all 4 models per strategy for a quick overview
+    summary = results_df.groupby('strategy').agg(
+        avg_accuracy=('accuracy', 'mean'),
+        avg_mcc=('mcc', 'mean'),
+        avg_grade1_recall=('grade1_recall', 'mean'),
+        avg_grade3_recall=('grade3_recall', 'mean'),
+    ).reset_index().sort_values(
+        ['avg_accuracy', 'avg_mcc'], ascending=False
+    )
+
+    print(f"\n{'Strategy':<30} {'Avg Acc':>8} {'Avg MCC':>8} "
+          f"{'Avg G1-Rec':>12} {'Avg G3-Rec':>12}")
+    print("-" * 75)
+    for _, row in summary.iterrows():
+        print(f"{row['strategy']:<30} {row['avg_accuracy']:>8.4f} "
+              f"{row['avg_mcc']:>8.4f} "
+              f"{row['avg_grade1_recall']:>12.4f} "
+              f"{row['avg_grade3_recall']:>12.4f}")
+
+    print("\n" + "="*80)
+    print("DETAIL — Best strategy per model (by Accuracy)")
+    print("="*80)
+    for model_name in ['RF', 'LGBM', 'XGB', 'CatBoost']:
+        model_df = results_df[results_df['model'] == model_name]
+        if model_df.empty:
+            continue
+        best = model_df.loc[model_df['accuracy'].idxmax()]
+        baseline = model_df[model_df['strategy'].str.contains('Baseline')]
+        baseline_acc = baseline['accuracy'].values[0] if len(baseline) > 0 else 0
+        delta = best['accuracy'] - baseline_acc
+        print(f"\n  {model_name}:")
+        print(f"    Best strategy   : {best['strategy']}")
+        print(f"    Accuracy        : {best['accuracy']:.4f}  "
+              f"(Baseline: {baseline_acc:.4f}, delta={delta:+.4f})")
+        print(f"    MCC             : {best['mcc']:.4f}")
+        print(f"    Grade-1 Recall  : {best['grade1_recall']:.4f}")
+
+    print("\n" + "="*80)
+    print("FULL TABLE (all strategies x all models)")
+    print("Sorted by Accuracy")
+    print("="*80)
+    full_table = results_df.sort_values(
+        ['accuracy', 'mcc'], ascending=False
+    ).reset_index(drop=True)
+    print(full_table.to_string(index=False))
+
+    # Save results to CSV
+    out_dir = Path('outputs')
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / 'sampling_comparison.csv'
+    results_df.to_csv(out_path, index=False)
+    print(f"\n  Saved: {out_path}")
+
+    return results_df
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1820,6 +2207,11 @@ def main():
                         help='Let the stacking final estimator also see original preprocessed features')
     parser.add_argument('--analyze', action='store_true',
                         help='Deep error analysis including RF, LGBM, XGB, CatBoost, Voting, and Stacking')
+    # ── Week 05: Sampling ─────────────────────────────────────────────────
+    parser.add_argument('--sampling', action='store_true',
+                        help='Week 05: Compare all sampling strategies on RF, LGBM, XGB, CatBoost')
+    parser.add_argument('--sampling-no-cv', action='store_true',
+                        help='Sampling comparison with single 80/20 split instead of CV (faster)')
     args = parser.parse_args()
 
     voting_weights = parse_voting_weights(args.voting_weights)
@@ -1858,6 +2250,24 @@ def main():
         n_splits=5,
         random_state=42,
     )
+
+    # ── --sampling: Week 05 Sampling-Vergleich ───────────────────────────
+    if args.sampling:
+        use_cv = not args.sampling_no_cv
+        mode_str = "single 80/20 split" if args.sampling_no_cv else "5-Fold CV"
+        print(f">>> Week 05 — Sampling Strategy Comparison ({mode_str})")
+        print(f"    Models: RF, LGBM, XGB, CatBoost")
+        print(f"    Strategies: Baseline, class_weight, SMOTE, UnderSampler,")
+        print(f"                SMOTE+Under, EasyEnsemble, ClusterCentroids, ROSE")
+        compare_sampling_strategies(
+            X_train_full, y_train_full,
+            pipeline_kwargs=pipeline_kwargs,
+            sample_size=args.sample,
+            use_cv=use_cv,
+            n_cv_splits=3,
+            random_state=42,
+        )
+        return
 
     # ── --analyze: deep error analysis ───────────────────────────────────
     if args.analyze:
