@@ -2029,11 +2029,34 @@ def compare_sampling_strategies(X_train_full, y_train_full,
                     except Exception as e:
                         print(f"    Sampling error fold {fold_i}: {e}")
 
-                # Fresh classifiers per fold to avoid any state leakage
-                clfs = make_classifiers('balanced' if use_cw else None)
-                rows = eval_single_split(X_tr_p, y_tr_p,
-                                         X_val_p, y_val_p, clfs)
-                fold_rows.extend(rows)
+                if is_ensemble and ensemble_factory is not None:
+                    # EasyEnsemble is its own classifier — train and evaluate directly
+                    t0 = time.time()
+                    clf = ensemble_factory()
+                    try:
+                        clf.fit(X_tr_p, y_tr_p)
+                        y_pred = clf.predict(X_val_p)
+                        from sklearn.metrics import classification_report as _cr
+                        acc  = accuracy_score(y_val_p, y_pred)
+                        mcc  = matthews_corrcoef(y_val_p, y_pred)
+                        rep  = _cr(y_val_p, y_pred, labels=[1, 2, 3],
+                                   output_dict=True, zero_division=0)
+                        r1 = rep.get('1', rep.get(1, {})).get('recall', 0.0)
+                        r3 = rep.get('3', rep.get(3, {})).get('recall', 0.0)
+                        fold_rows.append({
+                            'model': 'EasyEnsemble',
+                            'acc': acc, 'mcc': mcc,
+                            'grade1_recall': r1, 'grade3_recall': r3,
+                            'time': time.time() - t0
+                        })
+                    except Exception as e:
+                        print(f"    EasyEnsemble error fold {fold_i}: {e}")
+                else:
+                    # Fresh classifiers per fold to avoid any state leakage
+                    clfs = make_classifiers('balanced' if use_cw else None)
+                    rows = eval_single_split(X_tr_p, y_tr_p,
+                                             X_val_p, y_val_p, clfs)
+                    fold_rows.extend(rows)
 
             # Average metrics across all folds
             fold_df = pd.DataFrame(fold_rows)
