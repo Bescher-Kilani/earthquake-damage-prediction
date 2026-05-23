@@ -2219,6 +2219,555 @@ def compare_sampling_strategies(X_train_full, y_train_full,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Week 05 Experiment 1 — Threshold Tuning
+# Finds optimal per-class probability thresholds to maximise ACCURACY
+# Works on top of any classifier that supports predict_proba()
+# ─────────────────────────────────────────────────────────────────────────────
+
+def threshold_tuning(X_train_full, y_train_full,
+                     pipeline_kwargs=None,
+                     random_state=42):
+    """
+    Trains RF and LGBM with default settings, then searches for the best
+    probability threshold pair (t12, t23) that separates:
+      Grade 1 vs Grade 2  →  threshold t12
+      Grade 2 vs Grade 3  →  threshold t23
+
+    Decision rule given predicted probabilities [p1, p2, p3]:
+      if p1 >= t12        → predict Grade 1
+      elif p3 >= t23      → predict Grade 3
+      else                → predict Grade 2
+
+    t12 and t23 are optimised via grid search to maximise ACCURACY
+    (primary competition metric). MCC is reported alongside for reference.
+
+    Outputs a comparison table: Default threshold vs. Tuned threshold.
+    """
+    from sklearn.metrics import classification_report
+
+    if pipeline_kwargs is None:
+        pipeline_kwargs = {}
+
+    print("\n" + "="*60)
+    print("WEEK 05 — THRESHOLD TUNING")
+    print("Optimise Grade1/2 and Grade2/3 thresholds to maximise ACCURACY")
+    print("="*60)
+
+    # ── Single 80/20 split ───────────────────────────────────────────────────
+    X_tr, X_val, y_tr, y_val = train_test_split(
+        X_train_full, y_train_full,
+        test_size=0.2, random_state=random_state, stratify=y_train_full
+    )
+
+    preproc = _build_preproc_steps(pipeline_kwargs)
+    X_tr_p  = np.nan_to_num(preproc.fit_transform(X_tr, y_tr).astype(float))
+    X_val_p = np.nan_to_num(preproc.transform(X_val).astype(float))
+    y_tr_arr  = y_tr.values
+    y_val_arr = y_val.values
+
+    models = {
+        'RF':   RandomForestClassifier(n_estimators=200, max_depth=15,
+                                        random_state=random_state, n_jobs=-1),
+        'LGBM': LGBMClassifier(n_estimators=300, learning_rate=0.05,
+                                num_leaves=63, random_state=random_state,
+                                n_jobs=-1, verbose=-1),
+    }
+
+    results = []
+
+    for model_name, clf in models.items():
+        print(f"\n{'─'*55}")
+        print(f"  Model: {model_name}")
+        print(f"{'─'*55}")
+
+        # Train
+        t0 = time.time()
+        clf.fit(X_tr_p, y_tr_arr)
+        proba = clf.predict_proba(X_val_p)   # shape (n, 3) → cols: [P1, P2, P3]
+
+        # ── Default threshold (argmax) ───────────────────────────────────────
+        y_pred_default = np.argmax(proba, axis=1) + 1  # +1 because labels are 1,2,3
+        acc_default = accuracy_score(y_val_arr, y_pred_default)
+        mcc_default = matthews_corrcoef(y_val_arr, y_pred_default)
+
+        rep = classification_report(y_val_arr, y_pred_default,
+                                    labels=[1, 2, 3], output_dict=True,
+                                    zero_division=0)
+        r1_default = rep.get('1', rep.get(1, {})).get('recall', 0.0)
+        r3_default = rep.get('3', rep.get(3, {})).get('recall', 0.0)
+
+        print(f"  Default threshold (argmax):")
+        print(f"    Acc={acc_default:.4f}  MCC={mcc_default:.4f}  "
+              f"G1-Recall={r1_default:.3f}  G3-Recall={r3_default:.3f}")
+
+        # ── Threshold optimisation — maximise ACCURACY ───────────────────────
+        # t12: threshold on P(Grade1) — raise to predict more Grade 1
+        # t23: threshold on P(Grade3) — raise to predict fewer Grade 3
+        def apply_thresholds(t12, t23):
+            """Apply two thresholds and return predictions."""
+            preds = np.full(len(proba), 2, dtype=int)  # default: Grade 2
+            preds[proba[:, 0] >= t12] = 1              # Grade 1 if P1 >= t12
+            # Grade 3 only if not already Grade 1 and P3 >= t23
+            mask_not1 = preds != 1
+            preds[mask_not1 & (proba[:, 2] >= t23)] = 3
+            return preds
+
+        best_acc = acc_default   # optimise for ACCURACY
+        best_t12 = 1/3
+        best_t23 = 1/3
+
+        # Coarse grid search over [0.05, 0.80]
+        for t12 in np.arange(0.05, 0.81, 0.05):
+            for t23 in np.arange(0.05, 0.81, 0.05):
+                preds = apply_thresholds(t12, t23)
+                acc = accuracy_score(y_val_arr, preds)
+                if acc > best_acc:
+                    best_acc = acc
+                    best_t12 = t12
+                    best_t23 = t23
+
+        # Fine-tune around best with smaller step
+        for t12 in np.arange(max(0.01, best_t12 - 0.05),
+                              min(0.95, best_t12 + 0.05), 0.01):
+            for t23 in np.arange(max(0.01, best_t23 - 0.05),
+                                  min(0.95, best_t23 + 0.05), 0.01):
+                preds = apply_thresholds(t12, t23)
+                acc = accuracy_score(y_val_arr, preds)
+                if acc > best_acc:
+                    best_acc = acc
+                    best_t12 = t12
+                    best_t23 = t23
+
+        y_pred_tuned = apply_thresholds(best_t12, best_t23)
+        acc_tuned = accuracy_score(y_val_arr, y_pred_tuned)
+        mcc_tuned = matthews_corrcoef(y_val_arr, y_pred_tuned)
+        rep_tuned = classification_report(y_val_arr, y_pred_tuned,
+                                          labels=[1, 2, 3], output_dict=True,
+                                          zero_division=0)
+        r1_tuned = rep_tuned.get('1', rep_tuned.get(1, {})).get('recall', 0.0)
+        r3_tuned = rep_tuned.get('3', rep_tuned.get(3, {})).get('recall', 0.0)
+
+        print(f"  Tuned threshold (t12={best_t12:.2f}, t23={best_t23:.2f}):")
+        print(f"    Acc={acc_tuned:.4f}  MCC={mcc_tuned:.4f}  "
+              f"G1-Recall={r1_tuned:.3f}  G3-Recall={r3_tuned:.3f}")
+        print(f"  Delta: Acc={acc_tuned-acc_default:+.4f}  "
+              f"MCC={mcc_tuned-mcc_default:+.4f}  "
+              f"G1-Recall={r1_tuned-r1_default:+.3f}  "
+              f"G3-Recall={r3_tuned-r3_default:+.3f}")
+        print(f"  Time: {time.time()-t0:.1f}s")
+
+        results.append({
+            'model': model_name,
+            'threshold': 'default (argmax)',
+            'acc': acc_default, 'mcc': mcc_default,
+            'g1_recall': r1_default, 'g3_recall': r3_default,
+            't12': round(1/3, 3), 't23': round(1/3, 3)
+        })
+        results.append({
+            'model': model_name,
+            'threshold': f'tuned (t12={best_t12:.2f}, t23={best_t23:.2f})',
+            'acc': acc_tuned, 'mcc': mcc_tuned,
+            'g1_recall': r1_tuned, 'g3_recall': r3_tuned,
+            't12': round(best_t12, 3), 't23': round(best_t23, 3)
+        })
+
+    # ── Summary ──────────────────────────────────────────────────────────────
+    print("\n" + "="*80)
+    print("THRESHOLD TUNING — SUMMARY")
+    print("="*80)
+    df = pd.DataFrame(results)
+    print(df.to_string(index=False))
+
+    out_dir = Path('outputs')
+    out_dir.mkdir(parents=True, exist_ok=True)
+    df.to_csv(out_dir / 'threshold_tuning.csv', index=False)
+    print(f"\n  Saved: outputs/threshold_tuning.csv")
+    return df
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Week 05 Experiment 2 — New Features for Grade 2/3 Boundary
+# Adds interaction features targeting the Grade2/3 confusion
+# ─────────────────────────────────────────────────────────────────────────────
+
+class BoundaryFeatureCreator(BaseEstimator, TransformerMixin):
+    """
+    Creates interaction features specifically designed to help separate
+    the Grade 2/3 boundary — the main error source identified in Week 4.
+
+    New features:
+      superstructure_x_foundation  — combined structural risk indicator
+      superstructure_x_roof        — combined material risk indicator
+      age_x_floors                 — older + taller = higher damage risk
+      geo3_x_superstructure        — location-specific structural risk
+      damage_risk_score            — weighted numeric risk score
+    """
+
+    def __init__(self, enabled=True):
+        self.enabled = enabled
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        if not self.enabled:
+            return X
+        X = X.copy()
+
+        # 1. superstructure × foundation — combined structural vulnerability
+        if 'superstructure_type' in X.columns and 'foundation_type' in X.columns:
+            X['superstructure_x_foundation'] = (
+                X['superstructure_type'].astype(str)
+                + '_'
+                + X['foundation_type'].astype(str)
+            )
+
+        # 2. superstructure × roof — combined material risk
+        if 'superstructure_type' in X.columns and 'roof_type' in X.columns:
+            X['superstructure_x_roof'] = (
+                X['superstructure_type'].astype(str)
+                + '_'
+                + X['roof_type'].astype(str)
+            )
+
+        # 3. age × floors — older and taller buildings sustain more damage
+        if 'age' in X.columns and 'count_floors_pre_eq' in X.columns:
+            X['age_x_floors'] = (
+                X['age'].fillna(0) * X['count_floors_pre_eq'].fillna(1)
+            )
+
+        # 4. floors × area — building volume proxy
+        if 'count_floors_pre_eq' in X.columns and 'area_percentage' in X.columns:
+            X['floors_x_area'] = (
+                X['count_floors_pre_eq'].fillna(1) * X['area_percentage'].fillna(0)
+            )
+
+        # 5. Numeric damage risk score — weighted combination of key risk factors
+        #    Higher score = higher expected damage
+        if all(c in X.columns for c in
+               ['height_percentage', 'count_floors_pre_eq', 'age']):
+            X['damage_risk_score'] = (
+                0.4 * X['height_percentage'].fillna(0)
+                + 0.4 * X['count_floors_pre_eq'].fillna(0)
+                + 0.2 * (X['age'].fillna(0) / 100.0)
+            )
+
+        return X
+
+
+def boundary_feature_experiment(X_train_full, y_train_full,
+                                  pipeline_kwargs=None,
+                                  n_cv_splits=5,
+                                  random_state=42):
+    """
+    Compares baseline pipeline vs. pipeline + BoundaryFeatureCreator.
+    Uses 5-Fold CV for robust evaluation (same as sampling comparison).
+    Models: RF and LGBM.
+    """
+    from sklearn.metrics import classification_report
+
+    if pipeline_kwargs is None:
+        pipeline_kwargs = {}
+
+    print("\n" + "="*60)
+    print("WEEK 05 — BOUNDARY FEATURE EXPERIMENT")
+    print("New interaction features targeting Grade 2/3 confusion")
+    print(f"Evaluation: {n_cv_splits}-Fold CV")
+    print("="*60)
+
+    results = []
+
+    for variant_name, use_boundary in [('Baseline', False),
+                                        ('+ BoundaryFeatures', True)]:
+        print(f"\n{'─'*55}")
+        print(f"  Variant: {variant_name}")
+        print(f"{'─'*55}")
+
+        kf = KFold(n_splits=n_cv_splits, shuffle=True,
+                   random_state=random_state)
+        fold_rows = []
+
+        for fold_i, (tr_idx, val_idx) in enumerate(
+                kf.split(X_train_full), 1):
+            X_tr_f = X_train_full.iloc[tr_idx]
+            y_tr_f = y_train_full.iloc[tr_idx]
+            X_val_f = X_train_full.iloc[val_idx]
+            y_val_f = y_train_full.iloc[val_idx]
+
+            # Build preprocessing pipeline per fold — inject BoundaryFeatureCreator
+            from sklearn.dummy import DummyClassifier
+            base_pipe = build_pipeline(**pipeline_kwargs,
+                                       classifier=DummyClassifier())
+            steps = base_pipe.steps[:-1]  # drop classifier step
+
+            if use_boundary:
+                # Insert BoundaryFeatureCreator after the structural step
+                new_steps = []
+                for name, step in steps:
+                    new_steps.append((name, step))
+                    if name == 'structural':
+                        new_steps.append(('boundary_features',
+                                          BoundaryFeatureCreator(enabled=True)))
+                steps = new_steps
+
+            preproc = Pipeline(steps)
+            X_tr_p  = np.nan_to_num(
+                preproc.fit_transform(X_tr_f, y_tr_f).astype(float))
+            X_val_p = np.nan_to_num(
+                preproc.transform(X_val_f).astype(float))
+
+            for clf_name, clf in [
+                ('RF',   RandomForestClassifier(
+                             n_estimators=200, max_depth=15,
+                             random_state=random_state, n_jobs=-1)),
+                ('LGBM', LGBMClassifier(
+                             n_estimators=300, learning_rate=0.05,
+                             num_leaves=63, random_state=random_state,
+                             n_jobs=-1, verbose=-1)),
+            ]:
+                t0 = time.time()
+                clf.fit(X_tr_p, y_tr_f.values)
+                y_pred = clf.predict(X_val_p)
+
+                acc = accuracy_score(y_val_f.values, y_pred)
+                mcc = matthews_corrcoef(y_val_f.values, y_pred)
+                rep = classification_report(y_val_f.values, y_pred,
+                                            labels=[1, 2, 3],
+                                            output_dict=True,
+                                            zero_division=0)
+                r1 = rep.get('1', rep.get(1, {})).get('recall', 0.0)
+                r3 = rep.get('3', rep.get(3, {})).get('recall', 0.0)
+                fold_rows.append({
+                    'variant': variant_name, 'model': clf_name,
+                    'acc': acc, 'mcc': mcc,
+                    'g1_recall': r1, 'g3_recall': r3,
+                    'time': time.time() - t0
+                })
+
+        # Average over folds
+        fold_df = pd.DataFrame(fold_rows)
+        agg = fold_df.groupby(['variant', 'model']).agg(
+            acc=('acc', 'mean'), mcc=('mcc', 'mean'),
+            g1_recall=('g1_recall', 'mean'),
+            g3_recall=('g3_recall', 'mean'),
+            time=('time', 'mean')
+        ).reset_index()
+
+        for _, row in agg.iterrows():
+            print(f"  {row['model']:<6} Acc={row['acc']:.4f}  "
+                  f"MCC={row['mcc']:.4f}  "
+                  f"G1-Recall={row['g1_recall']:.3f}  "
+                  f"G3-Recall={row['g3_recall']:.3f}  "
+                  f"({row['time']:.1f}s/fold)")
+            results.append({
+                'variant': variant_name,
+                'model': row['model'],
+                'accuracy': round(row['acc'], 4),
+                'mcc': round(row['mcc'], 4),
+                'g1_recall': round(row['g1_recall'], 4),
+                'g3_recall': round(row['g3_recall'], 4),
+                'eval_mode': f'{n_cv_splits}-Fold CV'
+            })
+
+    # ── Summary ──────────────────────────────────────────────────────────────
+    print("\n" + "="*80)
+    print("BOUNDARY FEATURE EXPERIMENT — SUMMARY")
+    print("="*80)
+    df = pd.DataFrame(results)
+
+    for model_name in ['RF', 'LGBM']:
+        base = df[(df['model'] == model_name) &
+                  (df['variant'] == 'Baseline')].iloc[0]
+        new  = df[(df['model'] == model_name) &
+                  (df['variant'] == '+ BoundaryFeatures')].iloc[0]
+        print(f"\n  {model_name}:")
+        print(f"    Baseline:          Acc={base['accuracy']:.4f}  "
+              f"MCC={base['mcc']:.4f}  G3-Recall={base['g3_recall']:.3f}")
+        print(f"    BoundaryFeatures:  Acc={new['accuracy']:.4f}  "
+              f"MCC={new['mcc']:.4f}  G3-Recall={new['g3_recall']:.3f}")
+        print(f"    Delta:             Acc={new['accuracy']-base['accuracy']:+.4f}  "
+              f"MCC={new['mcc']-base['mcc']:+.4f}  "
+              f"G3-Recall={new['g3_recall']-base['g3_recall']:+.3f}")
+
+    out_dir = Path('outputs')
+    out_dir.mkdir(parents=True, exist_ok=True)
+    df.to_csv(out_dir / 'boundary_features.csv', index=False)
+    print(f"\n  Saved: outputs/boundary_features.csv")
+    return df
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Week 05 Experiment 3 — Two-Stage Classifier on Hard Cases
+# Stage 1: RF on all samples
+# Stage 2: LGBM trained only on uncertain/hard cases from Stage 1
+# Hard cases = samples where Stage 1 max probability < uncertainty_threshold
+# ─────────────────────────────────────────────────────────────────────────────
+
+def two_stage_classifier(X_train_full, y_train_full,
+                          pipeline_kwargs=None,
+                          uncertainty_threshold=0.50,
+                          random_state=42):
+    """
+    Two-stage classification to target the hard cases identified in Week 4.
+
+    Stage 1 — RF trained on all 260k samples.
+               Samples where max(proba) < uncertainty_threshold are
+               considered 'uncertain' and passed to Stage 2.
+
+    Stage 2 — LGBM trained only on the hard/uncertain cases from Stage 1.
+               Using LGBM (not RF) for Stage 2 adds diversity: the two
+               models use different learning mechanisms, so Stage 2 can
+               correct errors Stage 1 consistently makes.
+               Predicts only on the uncertain samples from the val set.
+
+    The idea: Stage 1 handles easy cases confidently; Stage 2 focuses
+    on the ambiguous Grade 2/3 boundary cases.
+
+    Outputs comparison: Stage 1 alone vs. Two-stage combined.
+    """
+    from sklearn.metrics import classification_report
+
+    if pipeline_kwargs is None:
+        pipeline_kwargs = {}
+
+    print("\n" + "="*60)
+    print("WEEK 05 — TWO-STAGE CLASSIFIER")
+    print(f"Stage 1: RF on all samples")
+    print(f"Stage 2: LGBM on uncertain samples "
+          f"(max_proba < {uncertainty_threshold})")
+    print("="*60)
+
+    # ── Split and preprocess ─────────────────────────────────────────────────
+    X_tr, X_val, y_tr, y_val = train_test_split(
+        X_train_full, y_train_full,
+        test_size=0.2, random_state=random_state, stratify=y_train_full
+    )
+
+    preproc = _build_preproc_steps(pipeline_kwargs)
+    X_tr_p  = np.nan_to_num(preproc.fit_transform(X_tr, y_tr).astype(float))
+    X_val_p = np.nan_to_num(preproc.transform(X_val).astype(float))
+    y_tr_arr  = y_tr.values
+    y_val_arr = y_val.values
+
+    # ── Stage 1: RF on full training data ────────────────────────────────────
+    print("\n[Stage 1] Training RF on full training set...")
+    t0 = time.time()
+    stage1 = RandomForestClassifier(n_estimators=200, max_depth=15,
+                                     random_state=random_state, n_jobs=-1)
+    stage1.fit(X_tr_p, y_tr_arr)
+    print(f"  Done in {time.time()-t0:.1f}s")
+
+    # Stage 1 predictions and probabilities on validation set
+    proba_val    = stage1.predict_proba(X_val_p)
+    y_pred_s1    = np.argmax(proba_val, axis=1) + 1
+    max_proba    = proba_val.max(axis=1)
+
+    acc_s1 = accuracy_score(y_val_arr, y_pred_s1)
+    mcc_s1 = matthews_corrcoef(y_val_arr, y_pred_s1)
+    rep_s1 = classification_report(y_val_arr, y_pred_s1,
+                                    labels=[1, 2, 3], output_dict=True,
+                                    zero_division=0)
+    r1_s1 = rep_s1.get('1', rep_s1.get(1, {})).get('recall', 0.0)
+    r3_s1 = rep_s1.get('3', rep_s1.get(3, {})).get('recall', 0.0)
+
+    print(f"  Stage 1 on val: Acc={acc_s1:.4f}  MCC={mcc_s1:.4f}  "
+          f"G1-Recall={r1_s1:.3f}  G3-Recall={r3_s1:.3f}")
+
+    # Identify uncertain samples in validation set
+    uncertain_val_mask = max_proba < uncertainty_threshold
+    n_uncertain = uncertain_val_mask.sum()
+    print(f"\n  Uncertain samples in val "
+          f"(max_proba < {uncertainty_threshold}): "
+          f"{n_uncertain:,} / {len(y_val_arr):,} "
+          f"({100*n_uncertain/len(y_val_arr):.1f}%)")
+
+    # ── Stage 2: LGBM trained on Stage 1's training errors ──────────────────
+    print("\n[Stage 2] Identifying hard cases in training set...")
+
+    # Use OOF predictions to find training hard cases without leakage
+    kf = KFold(n_splits=5, shuffle=True, random_state=random_state)
+    oof_proba = np.zeros((len(X_tr_p), 3))
+
+    for tr_idx, val_idx in kf.split(X_tr_p):
+        clf_fold = RandomForestClassifier(n_estimators=100, max_depth=15,
+                                           random_state=random_state,
+                                           n_jobs=-1)
+        clf_fold.fit(X_tr_p[tr_idx], y_tr_arr[tr_idx])
+        oof_proba[val_idx] = clf_fold.predict_proba(X_tr_p[val_idx])
+
+    oof_max_proba = oof_proba.max(axis=1)
+    hard_case_mask = oof_max_proba < uncertainty_threshold
+    n_hard = hard_case_mask.sum()
+    print(f"  Hard cases in training set: {n_hard:,} / {len(y_tr_arr):,} "
+          f"({100*n_hard/len(y_tr_arr):.1f}%)")
+
+    if n_hard < 100:
+        print("  WARNING: Too few hard cases for Stage 2. "
+              "Try lowering --uncertainty-threshold.")
+        return None
+
+    # Train Stage 2 LGBM only on hard cases
+    print(f"  Training Stage 2 LGBM on {n_hard:,} hard cases...")
+    t0 = time.time()
+    stage2 = LGBMClassifier(n_estimators=300, learning_rate=0.05,
+                              num_leaves=63, random_state=random_state,
+                              n_jobs=-1, verbose=-1)
+    stage2.fit(X_tr_p[hard_case_mask], y_tr_arr[hard_case_mask])
+    print(f"  Done in {time.time()-t0:.1f}s")
+
+    # ── Combine Stage 1 + Stage 2 on validation set ─────────────────────────
+    print("\n[Combined] Applying two-stage prediction on validation set...")
+    y_pred_combined = y_pred_s1.copy()
+
+    if uncertain_val_mask.sum() > 0:
+        # Override uncertain predictions with Stage 2
+        s2_preds = stage2.predict(X_val_p[uncertain_val_mask])
+        y_pred_combined[uncertain_val_mask] = s2_preds
+
+    acc_combined = accuracy_score(y_val_arr, y_pred_combined)
+    mcc_combined = matthews_corrcoef(y_val_arr, y_pred_combined)
+    rep_combined = classification_report(y_val_arr, y_pred_combined,
+                                          labels=[1, 2, 3], output_dict=True,
+                                          zero_division=0)
+    r1_combined = rep_combined.get('1', rep_combined.get(1, {})).get('recall', 0.0)
+    r3_combined = rep_combined.get('3', rep_combined.get(3, {})).get('recall', 0.0)
+
+    # ── Summary ──────────────────────────────────────────────────────────────
+    print("\n" + "="*80)
+    print("TWO-STAGE CLASSIFIER — SUMMARY")
+    print("="*80)
+    print(f"\n  {'Method':<30} {'Acc':>8} {'MCC':>8} "
+          f"{'G1-Recall':>10} {'G3-Recall':>10}")
+    print("  " + "-"*70)
+    print(f"  {'Stage 1 only (RF)':<30} {acc_s1:>8.4f} {mcc_s1:>8.4f} "
+          f"{r1_s1:>10.3f} {r3_s1:>10.3f}")
+    print(f"  {'Two-stage (RF + LGBM)':<30} {acc_combined:>8.4f} "
+          f"{mcc_combined:>8.4f} {r1_combined:>10.3f} {r3_combined:>10.3f}")
+    print(f"  {'Delta':<30} {acc_combined-acc_s1:>+8.4f} "
+          f"{mcc_combined-mcc_s1:>+8.4f} "
+          f"{r1_combined-r1_s1:>+10.3f} {r3_combined-r3_s1:>+10.3f}")
+    print(f"\n  Uncertain samples handled by Stage 2: {n_uncertain:,} "
+          f"({100*n_uncertain/len(y_val_arr):.1f}% of val set)")
+    print(f"  Uncertainty threshold: {uncertainty_threshold}")
+
+    results = pd.DataFrame([
+        {'method': 'Stage 1 only (RF)', 'uncertainty_threshold': uncertainty_threshold,
+         'acc': acc_s1, 'mcc': mcc_s1, 'g1_recall': r1_s1, 'g3_recall': r3_s1,
+         'uncertain_samples': 0},
+        {'method': 'Two-stage (RF+LGBM)', 'uncertainty_threshold': uncertainty_threshold,
+         'acc': acc_combined, 'mcc': mcc_combined,
+         'g1_recall': r1_combined, 'g3_recall': r3_combined,
+         'uncertain_samples': int(n_uncertain)},
+    ])
+
+    out_dir = Path('outputs')
+    out_dir.mkdir(parents=True, exist_ok=True)
+    results.to_csv(out_dir / 'two_stage_classifier.csv', index=False)
+    print(f"\n  Saved: outputs/two_stage_classifier.csv")
+    return results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -2258,6 +2807,15 @@ def main():
                         help='Comma-separated strategies to run, e.g. --strategies "Baseline,SMOTE,class_weight"'
                              ' | Available: Baseline, class_weight, SMOTE, RandomUnderSampler,'
                              ' SMOTE+Under, EasyEnsemble, ClusterCentroids, ROSE')
+    # ── Week 05 extra experiments ─────────────────────────────────────────
+    parser.add_argument('--threshold-tuning', action='store_true',
+                        help='Week 05 Exp 1: Optimise Grade1/2 and Grade2/3 thresholds on RF and LGBM')
+    parser.add_argument('--boundary-features', action='store_true',
+                        help='Week 05 Exp 2: Test new interaction features targeting Grade2/3 boundary')
+    parser.add_argument('--two-stage', action='store_true',
+                        help='Week 05 Exp 3: Two-stage classifier — RF on all, LGBM on hard cases')
+    parser.add_argument('--uncertainty-threshold', type=float, default=0.50,
+                        help='Max-probability threshold below which Stage 1 considers a sample uncertain (default: 0.50)')
     args = parser.parse_args()
 
     voting_weights = parse_voting_weights(args.voting_weights)
@@ -2319,6 +2877,38 @@ def main():
             n_cv_splits=5,
             random_state=42,
             selected_strategies=selected_strategies,
+        )
+        return
+
+    # ── --threshold-tuning ────────────────────────────────────────────────
+    if args.threshold_tuning:
+        print(">>> Week 05 Exp 1 — Threshold Tuning (RF + LGBM)")
+        threshold_tuning(
+            X_train_full, y_train_full,
+            pipeline_kwargs=pipeline_kwargs,
+            random_state=42,
+        )
+        return
+
+    # ── --boundary-features ───────────────────────────────────────────────
+    if args.boundary_features:
+        print(">>> Week 05 Exp 2 — Boundary Feature Experiment (RF + LGBM)")
+        boundary_feature_experiment(
+            X_train_full, y_train_full,
+            pipeline_kwargs=pipeline_kwargs,
+            random_state=42,
+        )
+        return
+
+    # ── --two-stage ───────────────────────────────────────────────────────
+    if args.two_stage:
+        print(f">>> Week 05 Exp 3 — Two-Stage Classifier "
+              f"(uncertainty threshold={args.uncertainty_threshold})")
+        two_stage_classifier(
+            X_train_full, y_train_full,
+            pipeline_kwargs=pipeline_kwargs,
+            uncertainty_threshold=args.uncertainty_threshold,
+            random_state=42,
         )
         return
 
