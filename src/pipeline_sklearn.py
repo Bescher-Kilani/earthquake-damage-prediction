@@ -1800,7 +1800,8 @@ def compare_sampling_strategies(X_train_full, y_train_full,
                                  sample_size=None,
                                  use_cv=True,
                                  n_cv_splits=5,
-                                 random_state=42):
+                                 random_state=42,
+                                 selected_strategies=None):
     """
     Compares all sampling strategies for Week 05.
 
@@ -1974,6 +1975,22 @@ def compare_sampling_strategies(X_train_full, y_train_full,
                         RandomOverSampler(random_state=random_state),
                         False, False, None))
 
+    # ── Filter strategies if --strategies was provided ───────────────────────
+    if selected_strategies is not None:
+        # Normalize to lowercase for case-insensitive matching
+        selected_lower = {s.lower().strip() for s in selected_strategies}
+        # Map friendly names to strategy name prefixes
+        strategies = [
+            s for s in strategies
+            if any(alias in s[0].lower() for alias in selected_lower)
+        ]
+        if not strategies:
+            print(f"  WARNING: No strategies matched {selected_strategies}.")
+            print(f"  Available: Baseline, class_weight, SMOTE, RandomUnderSampler,")
+            print(f"             SMOTE+Under, EasyEnsemble, ClusterCentroids, ROSE")
+            return pd.DataFrame()
+        print(f"  Running {len(strategies)} selected strategies.")
+
     # ── Run all strategies and collect results ───────────────────────────────
     all_results = []
 
@@ -2085,8 +2102,10 @@ def compare_sampling_strategies(X_train_full, y_train_full,
                     try:
                         X_tr_use, y_tr_use = sampler.fit_resample(
                             X_tr_use, y_tr_use)
+                        unique, counts = np.unique(y_tr_use, return_counts=True)
+                        class_dist = {int(k): int(v) for k, v in zip(unique, counts)}
                         print(f"    After sampling: {len(y_tr_use):,} samples | "
-                              f"classes: {dict(zip(*np.unique(y_tr_use, return_counts=True)))}")
+                              f"classes: {class_dist}")
                     except Exception as e:
                         print(f"    Sampling error: {e}")
 
@@ -2212,6 +2231,10 @@ def main():
                         help='Week 05: Compare all sampling strategies on RF, LGBM, XGB, CatBoost')
     parser.add_argument('--sampling-no-cv', action='store_true',
                         help='Sampling comparison with single 80/20 split instead of CV (faster)')
+    parser.add_argument('--strategies', type=str, default=None,
+                        help='Comma-separated strategies to run, e.g. --strategies "Baseline,SMOTE,class_weight"'
+                             ' | Available: Baseline, class_weight, SMOTE, RandomUnderSampler,'
+                             ' SMOTE+Under, EasyEnsemble, ClusterCentroids, ROSE')
     args = parser.parse_args()
 
     voting_weights = parse_voting_weights(args.voting_weights)
@@ -2255,17 +2278,24 @@ def main():
     if args.sampling:
         use_cv = not args.sampling_no_cv
         mode_str = "single 80/20 split" if args.sampling_no_cv else "5-Fold CV"
+        selected_strategies = (
+            [s.strip() for s in args.strategies.split(',')]
+            if args.strategies else None
+        )
         print(f">>> Week 05 — Sampling Strategy Comparison ({mode_str})")
         print(f"    Models: RF, LGBM, XGB, CatBoost")
-        print(f"    Strategies: Baseline, class_weight, SMOTE, UnderSampler,")
-        print(f"                SMOTE+Under, EasyEnsemble, ClusterCentroids, ROSE")
+        if selected_strategies:
+            print(f"    Strategies (filtered): {selected_strategies}")
+        else:
+            print(f"    Strategies: all 8")
         compare_sampling_strategies(
             X_train_full, y_train_full,
             pipeline_kwargs=pipeline_kwargs,
             sample_size=args.sample,
             use_cv=use_cv,
-            n_cv_splits=3,
+            n_cv_splits=5,
             random_state=42,
+            selected_strategies=selected_strategies,
         )
         return
 
