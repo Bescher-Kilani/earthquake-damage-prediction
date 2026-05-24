@@ -37,14 +37,18 @@ TASK-1/
 ## Setup
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# Clone the repository
+git clone https://github.com/Bescher-Kilani/earthquake-damage-prediction.git Earthquake
+cd Earthquake
 
-# Create data folder
-mkdir -p data
+# Run setup script once — creates venv, installs dependencies, creates folders
+bash setup.sh
+
+# Copy data files into data/
+cp train_values.csv train_labels.csv test_values.csv data/
 ```
 
-Place the CSV files in the `data/` folder before running the pipeline.
+The setup script creates a virtual environment, installs all dependencies from `requirements.txt`, and creates the `outputs/` and `data/` folders.
 
 Required input files:
 
@@ -58,52 +62,31 @@ data/test_values.csv
 
 ## Run Pipeline
 
-Run the final training pipeline and generate a submission file:
+For convenience, use `run.sh` — it activates the virtual environment and runs the pipeline in one command:
 
 ```bash
-python src/pipeline.py
+# Run default pipeline (Two-Stage RF+LGBM → submission file)
+bash run.sh
+
+# Pass any pipeline argument
+bash run.sh --compare
+bash run.sh --sampling
+bash run.sh --two-stage
+bash run.sh --compare --no-cv --models "Random Forest,LightGBM"
+```
+
+Or activate the virtual environment manually and run directly:
+
+```bash
+source venv/bin/activate
+python3 src/pipeline_sklearn.py
 ```
 
 Output:
 
 ```text
-outputs/Team2_prediction.csv
-```
-
-Run model comparison with cross-validation:
-
-```bash
-python src/pipeline.py --compare
-```
-
-Run a faster model comparison using a single train/validation split:
-
-```bash
-python src/pipeline.py --compare --no-cv
-```
-
-Run comparison on a smaller sample:
-
-```bash
-python src/pipeline.py --compare --sample 20000
-```
-
-Compare selected models only:
-
-```bash
-python src/pipeline.py --compare --models "Random Forest,LightGBM,CatBoost,Voting (soft),Stacking"
-```
-
-Run hard voting instead of soft voting:
-
-```bash
-python src/pipeline.py --compare --voting-mode hard
-```
-
-Run deep error analysis:
-
-```bash
-python src/pipeline.py --analyze
+outputs/Team2_prediction.csv   — submission file
+outputs/hard_cases.csv         — uncertain training samples
 ```
 
 ---

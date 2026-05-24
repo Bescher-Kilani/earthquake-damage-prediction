@@ -446,6 +446,59 @@ outputs/Team2_prediction.csv
 
 ## Week 5: Imbalanced Multi-Class Data
 
+### Usage — Week 5 Commands
+
+```bash
+# Generate submission file with Two-Stage Classifier (default, best model)
+# Stage 1: RF on all samples, Stage 2: LGBM on uncertain samples (threshold=0.65)
+# Output: outputs/Team2_prediction.csv + outputs/hard_cases.csv
+python3 src/pipeline_sklearn.py
+
+# ── Sampling Strategy Comparison ──────────────────────────────────────────
+
+# Compare all 8 sampling strategies with 5-Fold CV (robust, recommended)
+python3 src/pipeline_sklearn.py --sampling
+
+# Compare all 8 strategies with single 80/20 split (faster)
+python3 src/pipeline_sklearn.py --sampling --sampling-no-cv
+
+# Compare specific strategies only
+python3 src/pipeline_sklearn.py --sampling --strategies "Baseline,SMOTE,class_weight"
+
+# Quick test with subsampling
+python3 src/pipeline_sklearn.py --sampling --sampling-no-cv --sample 20000
+
+# ── Additional Experiments ─────────────────────────────────────────────────
+
+# Experiment 1: Threshold Tuning (optimise Grade1/2 and Grade2/3 thresholds)
+python3 src/pipeline_sklearn.py --threshold-tuning
+
+# Experiment 2: Boundary Feature Engineering (new interaction features)
+python3 src/pipeline_sklearn.py --boundary-features
+
+# Experiment 3: Two-Stage Classifier (RF + LGBM on hard cases)
+# Tests thresholds [0.50, 0.55, 0.60, 0.65, 0.70] automatically
+python3 src/pipeline_sklearn.py --two-stage
+
+# Two-Stage with specific threshold
+python3 src/pipeline_sklearn.py --two-stage --uncertainty-threshold 0.65
+```
+
+Available strategies for `--strategies`: `Baseline`, `class_weight`, `SMOTE`, `RandomUnderSampler`, `SMOTE+Under`, `EasyEnsemble`, `ClusterCentroids`, `ROSE`
+
+Week 5 output files:
+
+```text
+outputs/Team2_prediction.csv        — final submission (Two-Stage RF+LGBM)
+outputs/hard_cases.csv              — uncertain training samples (Stage 2 training set)
+outputs/sampling_comparison.csv     — sampling strategy results
+outputs/threshold_tuning.csv        — threshold tuning results
+outputs/boundary_features.csv       — boundary feature experiment results
+outputs/two_stage_classifier.csv    — two-stage results per threshold
+```
+
+---
+
 In Week 5, we systematically compared 8 sampling strategies to address the class imbalance problem identified in Week 4, and ran three additional experiments targeting the Grade 2/3 boundary confusion. Grade 1 (lightly damaged) accounts for only 9.6% of the training data.
 
 All final results use **5-Fold CV on 260k samples** for robust evaluation.
@@ -478,9 +531,9 @@ Best per model — all 4 models best with Baseline (no sampling):
 | XGB | 0.7383 | 0.5128 | 0.509 |
 | CatBoost | 0.7350 | 0.5054 | 0.485 |
 
-#### Key findings — Sampling
+#### Key Findings — Sampling
 
-**Sampling does not improve Accuracy or MCC.** Baseline wins on both metrics across all models. The classic imbalanced data trade-off applies: every strategy that improves G1-Recall costs Accuracy proportionally.
+Sampling does not improve Accuracy or MCC. Baseline wins on both metrics across all models. The classic imbalanced data trade-off applies: every strategy that improves G1-Recall costs Accuracy proportionally.
 
 ```
 Baseline:           Acc=0.74   G1-Recall=0.50
@@ -496,8 +549,6 @@ Best compromise if G1-Recall matters: **SMOTE + LGBM** (Acc=0.7342, G1-Recall=0.
 
 ### Part 2: Additional Experiments
 
-Three targeted experiments were run to address the Grade 2/3 boundary confusion (11,655 hard cases identified in Week 4).
-
 #### Experiment 1 — Threshold Tuning (5-Fold CV)
 
 Optimised probability thresholds t12 (Grade1/2) and t23 (Grade2/3) to maximise Accuracy.
@@ -509,14 +560,13 @@ Optimised probability thresholds t12 (Grade1/2) and t23 (Grade2/3) to maximise A
 | LGBM | Default (argmax) | 0.7408 | 0.5184 | 0.526 | 0.638 |
 | LGBM | Tuned (t12=0.40, t23=0.41) | 0.7246 | 0.5106 | 0.604 | 0.708 |
 
-**Verdict:** Threshold tuning consistently lowers Accuracy (RF: −0.021, LGBM: −0.016). Not useful when Accuracy is the primary metric. Improves Recall if that matters.
+**Verdict:** Threshold tuning lowers Accuracy (RF: −0.021, LGBM: −0.016). Not useful when Accuracy is the primary metric.
 
 ---
 
 #### Experiment 2 — Boundary Feature Engineering (5-Fold CV)
 
-Added 5 new interaction features targeting the Grade 2/3 boundary:
-`superstructure_x_foundation`, `superstructure_x_roof`, `age_x_floors`, `floors_x_area`, `damage_risk_score`
+Added 5 new interaction features: `superstructure_x_foundation`, `superstructure_x_roof`, `age_x_floors`, `floors_x_area`, `damage_risk_score`
 
 | Model | Variant | Acc | MCC | G3-Recall |
 |---|---|---:|---:|---:|
@@ -525,13 +575,13 @@ Added 5 new interaction features targeting the Grade 2/3 boundary:
 | LGBM | Baseline | 0.7408 | 0.5184 | 0.638 |
 | LGBM | + BoundaryFeatures | 0.7409 | 0.5185 | 0.638 |
 
-**Verdict:** Negligible improvement (+0.0002 Acc, +0.0006 MCC). Confirms the Week 4 finding: the Grade 2/3 difficulty is **inherent ambiguity**, not a feature representation problem.
+**Verdict:** Negligible improvement. Confirms Grade 2/3 confusion is inherent ambiguity, not a feature gap.
 
 ---
 
 #### Experiment 3 — Two-Stage Classifier (5-Fold CV)
 
-Stage 1: RF on all samples. Stage 2: LGBM on uncertain samples (max_proba < threshold). Five thresholds tested.
+Stage 1: RF on all samples. Stage 2: LGBM on uncertain samples. Five thresholds tested.
 
 | Threshold | Acc | Delta Acc | MCC | G1-Recall | Uncertain/fold |
 |---|---:|---:|---:|---:|---:|
@@ -541,18 +591,14 @@ Stage 1: RF on all samples. Stage 2: LGBM on uncertain samples (max_proba < thre
 | **0.65** | **0.7423** | **+0.0012** | **0.5211** | **0.527** | **15,670** |
 | 0.70 | 0.7421 | +0.0010 | 0.5206 | 0.526 | 20,605 |
 
-Baseline RF (Stage 1 only): Acc=0.7411, MCC=0.5153
-
-**Verdict: Best result of Week 5.** Threshold=0.65 consistently improves both Accuracy (+0.0012) and MCC (+0.0059) over 5 folds. Stage 2 LGBM corrects ~15,670 uncertain predictions per fold that RF gets wrong.
+**Verdict: Best result of Week 5.** Threshold=0.65 consistently improves both Accuracy (+0.0012) and MCC (+0.0059) over 5 folds.
 
 ---
 
 ### Week 5 — Final Decision for Submission
 
-Two-Stage Classifier (RF + LGBM, threshold=0.65) is the new best model.
-
 ```
-Submission model:    Two-Stage RF + LGBM (threshold=0.65)
+Submission model:     Two-Stage RF + LGBM (threshold=0.65)
 Accuracy (5-Fold CV): 0.7423   (+0.0012 over RF Baseline)
 MCC (5-Fold CV):      0.5211   (+0.0059 over RF Baseline)
 ```
@@ -570,13 +616,13 @@ Note: Week 5 reports 5-Fold CV mean scores. Week 4 used a single split.
 
 ### What Worked in Week 5
 
-**Two-Stage Classifier** — letting RF handle confident predictions and LGBM handle uncertain ones gives consistent small gains on both Accuracy and MCC.
+**Two-Stage Classifier** — RF handles confident predictions, LGBM handles uncertain ones. Consistent small gains on both Accuracy and MCC across all 5 folds.
 
 ### What Did Not Work in Week 5
 
-**Sampling strategies** — none improved Accuracy or MCC over the baseline for large tree ensemble models on 260k samples.
+**Sampling strategies** — none improved Accuracy or MCC over baseline for large tree ensemble models on 260k samples.
 
-**Threshold Tuning** — optimising thresholds for Accuracy worsens Accuracy (the model already uses near-optimal thresholds internally).
+**Threshold Tuning** — optimising thresholds for Accuracy worsens Accuracy; the model already uses near-optimal thresholds internally.
 
 **Boundary Feature Engineering** — new interaction features bring negligible improvement, confirming the Grade 2/3 confusion is inherent ambiguity not a feature gap.
 
@@ -588,5 +634,3 @@ Note: Week 5 reports 5-Fold CV mean scores. Week 4 used a single split.
   - Tune RF and LGBM within the Two-Stage framework
   - Use Optuna or RandomizedSearchCV with 5-Fold CV
   - Target: push Accuracy above 0.75
-- Threshold search for the Two-Stage model (already done: 0.65 is optimal)
-- Investigate stacking with Two-Stage as meta-feature input
