@@ -3051,17 +3051,80 @@ def main():
         print(f"Results saved: {out_path}")
         return
 
-    # ── normal run: train on full 260k → submission file ──────────────────
-    print(">>> Training final pipeline on full training data (260k)")
-    print("    Classifier: Random Forest (best Accuracy in Week 04 comparison)")
-    final_pipeline = build_pipeline(**pipeline_kwargs)
-    final_pipeline.fit(X_train_full, y_train_full)
+    # ── normal run: train on full data → submission file ─────────────────
+    # Default model: Two-Stage Classifier (RF + LGBM, threshold=0.65)
+    # Best result from Week 05: Acc=0.7423, MCC=0.5211 (5-Fold CV)
+    print(">>> Training final Two-Stage pipeline on full training data (260k)")
+    print("    Stage 1: RF  (trained on all samples)")
+    print("    Stage 2: LGBM (trained on uncertain samples, threshold=0.65)")
 
-    analyze_feature_importance(final_pipeline, top_n=15)
+    # ── Preprocess full training data ─────────────────────────────────────
+    preproc_final = _build_preproc_steps(pipeline_kwargs)
+    X_train_proc = np.nan_to_num(
+        preproc_final.fit_transform(X_train_full, y_train_full).astype(float))
+    X_test_proc  = np.nan_to_num(
+        preproc_final.transform(X_test).astype(float))
+    y_train_arr  = y_train_full.values
 
-    predictions = final_pipeline.predict(X_test)
+    # ── Stage 1: RF on all training data ──────────────────────────────────
+    UNCERTAINTY_THRESHOLD = 0.65
+    print(f"\n[Stage 1] Training RF on {len(X_train_proc):,} samples...")
+    t0 = time.time()
+    stage1_final = RandomForestClassifier(
+        n_estimators=200, max_depth=15, random_state=42, n_jobs=-1)
+    stage1_final.fit(X_train_proc, y_train_arr)
+    print(f"  Done in {time.time()-t0:.1f}s")
 
-    print("="*60)
+    # ── Find hard cases via OOF on training data (no leakage) ─────────────
+    print(f"\n[Stage 2] Identifying hard cases (OOF, threshold={UNCERTAINTY_THRESHOLD})...")
+    kf_final = KFold(n_splits=5, shuffle=True, random_state=42)
+    oof_proba_final = np.zeros((len(X_train_proc), 3))
+    for tr_idx, val_idx in kf_final.split(X_train_proc):
+        clf_oof = RandomForestClassifier(
+            n_estimators=100, max_depth=15, random_state=42, n_jobs=-1)
+        clf_oof.fit(X_train_proc[tr_idx], y_train_arr[tr_idx])
+        oof_proba_final[val_idx] = clf_oof.predict_proba(X_train_proc[val_idx])
+
+    hard_mask_final = oof_proba_final.max(axis=1) < UNCERTAINTY_THRESHOLD
+    n_hard_final = hard_mask_final.sum()
+    print(f"  Hard cases: {n_hard_final:,} / {len(y_train_arr):,} "
+          f"({100*n_hard_final/len(y_train_arr):.1f}%)")
+
+    # Save hard cases to outputs/
+    hard_cases_df = X_train_full[hard_mask_final].copy()
+    hard_cases_df['damage_grade'] = y_train_arr[hard_mask_final]
+    hard_cases_df['oof_max_proba'] = oof_proba_final[hard_mask_final].max(axis=1)
+    out_dir = Path('outputs')
+    out_dir.mkdir(parents=True, exist_ok=True)
+    hard_cases_df.to_csv(out_dir / 'hard_cases.csv', index=True)
+    print(f"  Hard cases saved: outputs/hard_cases.csv")
+
+    # ── Stage 2: LGBM on hard cases only ──────────────────────────────────
+    print(f"\n  Training Stage 2 LGBM on {n_hard_final:,} hard cases...")
+    t0 = time.time()
+    stage2_final = LGBMClassifier(
+        n_estimators=300, learning_rate=0.05, num_leaves=63,
+        random_state=42, n_jobs=-1, verbose=-1)
+    stage2_final.fit(X_train_proc[hard_mask_final], y_train_arr[hard_mask_final])
+    print(f"  Done in {time.time()-t0:.1f}s")
+
+    # ── Predict on test set ────────────────────────────────────────────────
+    print("\n[Predict] Applying Two-Stage to test set...")
+    proba_test   = stage1_final.predict_proba(X_test_proc)
+    predictions  = np.argmax(proba_test, axis=1) + 1
+    max_proba_test = proba_test.max(axis=1)
+
+    # Override uncertain test predictions with Stage 2
+    uncertain_test_mask = max_proba_test < UNCERTAINTY_THRESHOLD
+    n_uncertain_test = uncertain_test_mask.sum()
+    if n_uncertain_test > 0:
+        predictions[uncertain_test_mask] = stage2_final.predict(
+            X_test_proc[uncertain_test_mask])
+    print(f"  Uncertain test samples handled by Stage 2: "
+          f"{n_uncertain_test:,} / {len(predictions):,} "
+          f"({100*n_uncertain_test/len(predictions):.1f}%)")
+
+    print("\n" + "="*60)
     print("PREDICTIONS")
     print("="*60)
     print(f"Total: {len(predictions):,}")
@@ -3070,8 +3133,12 @@ def main():
         print(f"  Grade {grade}: {count:,}")
     print("="*60 + "\n")
 
+    # ── Save submission — only Team2_prediction.csv ────────────────────────
     save_submission(predictions, test_ids)
     print("PIPELINE COMPLETE!\n")
+    print(f"Output files:")
+    print(f"  outputs/Team2_prediction.csv  — submission file")
+    print(f"  outputs/hard_cases.csv        — hard cases from training set")
 
 
 if __name__ == '__main__':
