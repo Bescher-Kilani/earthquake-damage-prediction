@@ -2947,7 +2947,7 @@ def tune_random_search(X_train_full, y_train_full,
     }
 
     lgbm_base = LGBMClassifier(
-        random_state=random_state, n_jobs=1, verbose=-1)  # n_jobs=1 prevents thread explosion inside RandomizedSearchCV
+        random_state=random_state, n_jobs=-1, verbose=-1)
     lgbm_search = RandomizedSearchCV(
         estimator=lgbm_base,
         param_distributions=lgbm_param_dist,
@@ -3103,7 +3103,7 @@ def tune_optuna(X_train_full, y_train_full,
             'min_child_samples': trial.suggest_int('min_child_samples', 10, 50),
         }
         clf = LGBMClassifier(
-            **params, random_state=random_state, n_jobs=1, verbose=-1)  # n_jobs=1 prevents thread explosion
+            **params, random_state=random_state, n_jobs=-1, verbose=-1)
         fold_accs = []
         for tr_idx, val_idx in kf_hard.split(X_hard):
             clf_fold = clone(clf)
