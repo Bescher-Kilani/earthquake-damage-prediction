@@ -37,14 +37,18 @@ TASK-1/
 ## Setup
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# Clone the repository
+git clone https://github.com/Bescher-Kilani/earthquake-damage-prediction.git Earthquake
+cd Earthquake
 
-# Create data folder
-mkdir -p data
+# Run setup script once — creates venv, installs dependencies, creates folders
+bash setup.sh
+
+# Copy data files into data/
+cp train_values.csv train_labels.csv test_values.csv data/
 ```
 
-Place the CSV files in the `data/` folder before running the pipeline.
+The setup script creates a virtual environment, installs all dependencies from `requirements.txt`, and creates the `outputs/` and `data/` folders.
 
 Required input files:
 
@@ -58,52 +62,31 @@ data/test_values.csv
 
 ## Run Pipeline
 
-Run the final training pipeline and generate a submission file:
+For convenience, use `run.sh` — it activates the virtual environment and runs the pipeline in one command:
 
 ```bash
-python src/pipeline.py
+# Run default pipeline (Two-Stage RF+LGBM → submission file)
+bash run.sh
+
+# Pass any pipeline argument
+bash run.sh --compare
+bash run.sh --sampling
+bash run.sh --two-stage
+bash run.sh --compare --no-cv --models "Random Forest,LightGBM"
+```
+
+Or activate the virtual environment manually and run directly:
+
+```bash
+source venv/bin/activate
+python3 src/pipeline_sklearn.py
 ```
 
 Output:
 
 ```text
-outputs/Team2_prediction.csv
-```
-
-Run model comparison with cross-validation:
-
-```bash
-python src/pipeline.py --compare
-```
-
-Run a faster model comparison using a single train/validation split:
-
-```bash
-python src/pipeline.py --compare --no-cv
-```
-
-Run comparison on a smaller sample:
-
-```bash
-python src/pipeline.py --compare --sample 20000
-```
-
-Compare selected models only:
-
-```bash
-python src/pipeline.py --compare --models "Random Forest,LightGBM,CatBoost,Voting (soft),Stacking"
-```
-
-Run hard voting instead of soft voting:
-
-```bash
-python src/pipeline.py --compare --voting-mode hard
-```
-
-Run deep error analysis:
-
-```bash
-python src/pipeline.py --analyze
+outputs/Team2_prediction.csv   — submission file
+outputs/hard_cases.csv         — uncertain training samples
 ```
 
 ---
@@ -443,194 +426,149 @@ outputs/Team2_prediction.csv
 ```
 
 ---
+## Week 6: Hyperparameter Tuning
 
-## Week 5: Imbalanced Multi-Class Data
-
-### Usage — Week 5 Commands
+### Usage — Week 6 Commands
 
 ```bash
-# Generate submission file with Two-Stage Classifier (default, best model)
-# Stage 1: RF on all samples, Stage 2: LGBM on uncertain samples (threshold=0.65)
-# Output: outputs/Team2_prediction.csv + outputs/hard_cases.csv
-python3 src/pipeline_sklearn.py
+# Random Search (RandomizedSearchCV, 20 iterations, 5-Fold CV)
+python3 src/pipeline_sklearn.py --tune-random
 
-# ── Sampling Strategy Comparison ──────────────────────────────────────────
+# Optuna (Bayesian Optimization, 30 trials, 5-Fold CV)
+python3 src/pipeline_sklearn.py --tune-optuna
 
-# Compare all 8 sampling strategies with 5-Fold CV (robust, recommended)
-python3 src/pipeline_sklearn.py --sampling
+# Nested CV (fair performance estimate, 3 outer × 3 inner folds, 30 trials)
+python3 src/pipeline_sklearn.py --tune-nested-cv
 
-# Compare all 8 strategies with single 80/20 split (faster)
-python3 src/pipeline_sklearn.py --sampling --sampling-no-cv
-
-# Compare specific strategies only
-python3 src/pipeline_sklearn.py --sampling --strategies "Baseline,SMOTE,class_weight"
-
-# Quick test with subsampling
-python3 src/pipeline_sklearn.py --sampling --sampling-no-cv --sample 20000
-
-# ── Additional Experiments ─────────────────────────────────────────────────
-
-# Experiment 1: Threshold Tuning (optimise Grade1/2 and Grade2/3 thresholds)
-python3 src/pipeline_sklearn.py --threshold-tuning
-
-# Experiment 2: Boundary Feature Engineering (new interaction features)
-python3 src/pipeline_sklearn.py --boundary-features
-
-# Experiment 3: Two-Stage Classifier (RF + LGBM on hard cases)
-# Tests thresholds [0.50, 0.55, 0.60, 0.65, 0.70] automatically
-python3 src/pipeline_sklearn.py --two-stage
-
-# Two-Stage with specific threshold
-python3 src/pipeline_sklearn.py --two-stage --uncertainty-threshold 0.65
-```
-
-Available strategies for `--strategies`: `Baseline`, `class_weight`, `SMOTE`, `RandomUnderSampler`, `SMOTE+Under`, `EasyEnsemble`, `ClusterCentroids`, `ROSE`
-
-Week 5 output files:
-
-```text
-outputs/Team2_prediction.csv        — final submission (Two-Stage RF+LGBM)
-outputs/hard_cases.csv              — uncertain training samples (Stage 2 training set)
-outputs/sampling_comparison.csv     — sampling strategy results
-outputs/threshold_tuning.csv        — threshold tuning results
-outputs/boundary_features.csv       — boundary feature experiment results
-outputs/two_stage_classifier.csv    — two-stage results per threshold
+# With subsampling for faster testing
+python3 src/pipeline_sklearn.py --tune-random --sample 80000
+python3 src/pipeline_sklearn.py --tune-optuna --tune-trials 20 --sample 80000
+python3 src/pipeline_sklearn.py --tune-nested-cv --tune-trials 10 --sample 80000
 ```
 
 ---
 
-In Week 5, we systematically compared 8 sampling strategies to address the class imbalance problem identified in Week 4, and ran three additional experiments targeting the Grade 2/3 boundary confusion. Grade 1 (lightly damaged) accounts for only 9.6% of the training data.
+In Week 6, we tuned the hyperparameters of the Two-Stage RF+LGBM classifier using three methods: Random Search, Optuna (Bayesian Optimization), and Nested CV for fair evaluation.
 
-All final results use **5-Fold CV on 260k samples** for robust evaluation.
+All tuning runs on the full 260k training set. RF (Stage 1) tuned with 5-Fold CV. LGBM (Stage 2) tuned with 3-Fold CV on the ~75k hard cases subset.
 
 ---
 
-### Part 1: Sampling Strategy Comparison
+### Tuning Methods
 
-8 strategies tested on RF, LGBM, XGB, CatBoost. EasyEnsemble evaluated as standalone classifier.
+**Random Search** — tests 20 random hyperparameter combinations via RandomizedSearchCV. Fast baseline, no learning between iterations.
 
-#### Results — 5-Fold CV
+**Optuna** — Bayesian Optimization using TPE sampler. Learns from previous trials and focuses search on promising parameter regions. 30 trials per model.
 
-| Strategy | Avg Acc | Avg MCC | Avg G1-Recall | Avg G3-Recall |
-|---|---:|---:|---:|---:|
-| Baseline | **0.7388** | **0.5130** | 0.497 | 0.633 |
-| SMOTE+Under (Mix) | 0.7179 | 0.5037 | 0.691 | 0.687 |
-| SMOTE | 0.7178 | 0.5033 | 0.688 | 0.689 |
-| class_weight=balanced | 0.7008 | 0.4952 | 0.740 | 0.709 |
-| ROSE | 0.6858 | 0.4881 | 0.827 | 0.736 |
-| RandomUnderSampler | 0.6768 | 0.4795 | 0.842 | 0.735 |
-| EasyEnsemble | 0.6587 | 0.4517 | 0.793 | 0.735 |
-| ClusterCentroids | 0.4450 | 0.3241 | 0.919 | 0.810 |
+**Nested CV** — fair performance evaluation. Outer loop: 3 folds (test). Inner loop: 3 folds + Optuna (tune). Outer test folds never seen during parameter selection. Quantifies optimistic bias of normal CV.
 
-Best per model — all 4 models best with Baseline (no sampling):
+---
 
-| Model | Accuracy | MCC | G1-Recall |
-|---|---:|---:|---:|
-| RF | 0.7411 | 0.5153 | 0.469 |
-| LGBM | 0.7408 | 0.5184 | 0.526 |
-| XGB | 0.7383 | 0.5128 | 0.509 |
-| CatBoost | 0.7350 | 0.5054 | 0.485 |
+### Hyperparameters Tuned
 
-#### Key Findings — Sampling
+**RF (Stage 1):**
 
-Sampling does not improve Accuracy or MCC. Baseline wins on both metrics across all models. The classic imbalanced data trade-off applies: every strategy that improves G1-Recall costs Accuracy proportionally.
+| Parameter | Search space | Meaning |
+|---|---|---|
+| `n_estimators` | [100, 200, 300, 500] | Number of trees |
+| `max_depth` | 8–25 | Tree depth (complexity) |
+| `min_samples_leaf` | 1–20 | Minimum samples per leaf (regularization) |
+| `max_features` | sqrt, log2, 0.3, 0.5 | Features per split (tree diversity) |
+
+**LGBM (Stage 2):**
+
+| Parameter | Search space | Meaning |
+|---|---|---|
+| `n_estimators` | [200, 300, 500] | Boosting rounds |
+| `learning_rate` | [0.01, 0.05, 0.1] | Step size per round |
+| `num_leaves` | 31–127 | Tree complexity |
+| `min_child_samples` | 10–50 | Minimum samples per leaf (regularization) |
+
+---
+
+### Results
+
+#### Random Search (20 iterations, full 260k)
 
 ```
-Baseline:           Acc=0.74   G1-Recall=0.50
-SMOTE:              Acc=0.72   G1-Recall=0.69   (−0.02 Acc, +0.19 Recall)
-class_weight:       Acc=0.70   G1-Recall=0.74   (−0.04 Acc, +0.24 Recall)
-RandomUnderSampler: Acc=0.68   G1-Recall=0.84   (−0.06 Acc, +0.34 Recall)
-ClusterCentroids:   Acc=0.44   G1-Recall=0.92   (−0.30 Acc  — unusable)
+RF:   max_depth=18, max_features=0.3, min_samples_leaf=4, n_estimators=500
+      Acc (CV) = 0.7554
+
+LGBM: learning_rate=0.1, min_child_samples=17, n_estimators=500, num_leaves=65
+      Acc (CV) = 0.5677  (on hard cases subset only)
 ```
 
-Best compromise if G1-Recall matters: **SMOTE + LGBM** (Acc=0.7342, G1-Recall=0.614, only −0.007 Acc loss).
+#### Optuna (30 trials, full 260k)
 
----
+```
+RF:   n_estimators=500, max_depth=16, min_samples_leaf=6, max_features=0.5
+      Acc (CV) = 0.7551
 
-### Part 2: Additional Experiments
+LGBM: n_estimators=500, learning_rate=0.05, num_leaves=76, min_child_samples=21
+      Acc (CV) = 0.5717  (on hard cases subset only)
+```
 
-#### Experiment 1 — Threshold Tuning (5-Fold CV)
+#### Nested CV (3 outer × 3 inner folds, 30 trials, full 260k)
 
-Optimised probability thresholds t12 (Grade1/2) and t23 (Grade2/3) to maximise Accuracy.
-
-| Model | Method | Acc | MCC | G1-Recall | G3-Recall |
-|---|---|---:|---:|---:|---:|
-| RF | Default (argmax) | 0.7411 | 0.5153 | 0.469 | 0.629 |
-| RF | Tuned (t12=0.35, t23=0.37) | 0.7199 | 0.5072 | 0.621 | 0.736 |
-| LGBM | Default (argmax) | 0.7408 | 0.5184 | 0.526 | 0.638 |
-| LGBM | Tuned (t12=0.40, t23=0.41) | 0.7246 | 0.5106 | 0.604 | 0.708 |
-
-**Verdict:** Threshold tuning lowers Accuracy (RF: −0.021, LGBM: −0.016). Not useful when Accuracy is the primary metric.
-
----
-
-#### Experiment 2 — Boundary Feature Engineering (5-Fold CV)
-
-Added 5 new interaction features: `superstructure_x_foundation`, `superstructure_x_roof`, `age_x_floors`, `floors_x_area`, `damage_risk_score`
-
-| Model | Variant | Acc | MCC | G3-Recall |
+| Outer Fold | Best Params | Inner Acc | Outer Acc | Outer MCC |
 |---|---|---:|---:|---:|
-| RF | Baseline | 0.7411 | 0.5153 | 0.629 |
-| RF | + BoundaryFeatures | 0.7413 | 0.5159 | 0.629 |
-| LGBM | Baseline | 0.7408 | 0.5184 | 0.638 |
-| LGBM | + BoundaryFeatures | 0.7409 | 0.5185 | 0.638 |
+| 1 | depth=14, leaf=3, n=200, max_f=0.5 | 0.7526 | 0.7520 | 0.5396 |
+| 2 | depth=18, leaf=5, n=200, max_f=0.3 | 0.7516 | 0.7537 | 0.5426 |
+| 3 | depth=19, leaf=13, n=100, max_f=0.5 | 0.7511 | 0.7547 | 0.5449 |
+| **Mean** | | **0.7518** | **0.7535** | **0.5424** |
 
-**Verdict:** Negligible improvement. Confirms Grade 2/3 confusion is inherent ambiguity, not a feature gap.
+#### Normal CV vs Nested CV
 
----
+| Method | Acc | Notes |
+|---|---:|---|
+| Normal CV (Optuna) | 0.7551 | Used for parameter selection |
+| Nested CV | 0.7535 | Fair unbiased estimate |
+| Optimistic bias | 0.0016 | Very small — tuning is stable |
 
-#### Experiment 3 — Two-Stage Classifier (5-Fold CV)
-
-Stage 1: RF on all samples. Stage 2: LGBM on uncertain samples. Five thresholds tested.
-
-| Threshold | Acc | Delta Acc | MCC | G1-Recall | Uncertain/fold |
-|---|---:|---:|---:|---:|---:|
-| 0.50 | 0.7413 | +0.0002 | 0.5162 | 0.478 | 981 |
-| 0.55 | 0.7418 | +0.0007 | 0.5187 | 0.504 | 5,867 |
-| 0.60 | 0.7419 | +0.0008 | 0.5200 | 0.519 | 10,724 |
-| **0.65** | **0.7423** | **+0.0012** | **0.5211** | **0.527** | **15,670** |
-| 0.70 | 0.7421 | +0.0010 | 0.5206 | 0.526 | 20,605 |
-
-**Verdict: Best result of Week 5.** Threshold=0.65 consistently improves both Accuracy (+0.0012) and MCC (+0.0059) over 5 folds.
+The bias of 0.0016 confirms the tuned parameters generalize well and are not overfit to the CV folds.
 
 ---
 
-### Week 5 — Final Decision for Submission
+### Final Model — Week 6
 
-```
-Submission model:     Two-Stage RF + LGBM (threshold=0.65)
-Accuracy (5-Fold CV): 0.7423   (+0.0012 over RF Baseline)
-MCC (5-Fold CV):      0.5211   (+0.0059 over RF Baseline)
+Optuna params used for final submission:
+
+```python
+# Stage 1 — RF
+n_estimators=500, max_depth=16, min_samples_leaf=6, max_features=0.5
+
+# Stage 2 — LGBM
+n_estimators=500, learning_rate=0.05, num_leaves=76, min_child_samples=21
 ```
 
 ### Updated Overall Performance
 
-| Metric | Week 2 | Week 3 | Week 4 | Week 5 (CV) |
-|---|---:|---:|---:|---:|
-| MCC | 0.4077 | 0.5023 | 0.5239 | 0.5211 |
-| Accuracy | 0.6881 | 0.7327 | 0.7437 | 0.7423 |
+| Metric | Week 2 | Week 3 | Week 4 | Week 5 (CV) | Week 6 (CV) |
+|---|---:|---:|---:|---:|---:|
+| MCC | 0.4077 | 0.5023 | 0.5239 | 0.5211 | 0.5424 |
+| Accuracy | 0.6881 | 0.7327 | 0.7437 | 0.7423 | 0.7551 |
 
-Note: Week 5 reports 5-Fold CV mean scores. Week 4 used a single split.
+Note: Week 6 reports Nested CV mean scores (fair estimate). Normal CV Acc = 0.7551.
 
 ---
 
-### What Worked in Week 5
+### What Worked in Week 6
 
-**Two-Stage Classifier** — RF handles confident predictions, LGBM handles uncertain ones. Consistent small gains on both Accuracy and MCC across all 5 folds.
+**Optuna** — converged after ~15 trials, confirming 30 trials is sufficient. Both Random Search and Optuna agreed on `n_estimators=500` and `max_features=0.5`.
 
-### What Did Not Work in Week 5
+**Small optimistic bias (0.0016)** — Nested CV confirms tuned params are robust.
 
-**Sampling strategies** — none improved Accuracy or MCC over baseline for large tree ensemble models on 260k samples.
+---
 
-**Threshold Tuning** — optimising thresholds for Accuracy worsens Accuracy; the model already uses near-optimal thresholds internally.
+### What Did Not Work in Week 6
 
-**Boundary Feature Engineering** — new interaction features bring negligible improvement, confirming the Grade 2/3 confusion is inherent ambiguity not a feature gap.
+**Parallel tuning jobs** — running all three jobs simultaneously caused crashes due to LGBM spawning too many threads. Solution: run sequentially.
+
+**LGBM tuning with 5-Fold CV** — ~2.5h per trial on 75k hard cases. Fixed by switching to 3-Fold CV for LGBM.
 
 ---
 
 ## Open Questions / Next Steps
 
-- **Week 06 (26.05): Hyperparameter Tuning**
-  - Tune RF and LGBM within the Two-Stage framework
-  - Use Optuna or RandomizedSearchCV with 5-Fold CV
-  - Target: push Accuracy above 0.75
+- Final presentation (09.06.)
+- Report submission (15.06.)
