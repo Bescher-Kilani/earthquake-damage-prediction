@@ -572,7 +572,19 @@ RF (Stage 1) tuned with 5-Fold CV on full 260k. LGBM (Stage 2) tuned with 3-Fold
 
 **Nested CV** (`--tune-nested-cv`) — fair performance evaluation to quantify optimistic bias of normal CV. Outer loop: 3 folds (evaluation). Inner loop: 3 folds + Optuna (tuning). Outer test folds are never seen during parameter selection.
 
-### Hyperparameters Tuned
+### Why No Grid Search
+
+Grid Search tests all combinations in a fixed raster. With 4 parameters × 4 values each = 256 combinations × 5-Fold CV × ~25s per RF fit = ~9h on the full 260k dataset. Random Search achieves comparable results with 20 iterations (~30 min) because only 1-2 parameters typically dominate the performance. Optuna is even more efficient by learning which regions to search.
+
+### Runtimes
+
+| Method | RF Stage 1 | LGBM Stage 2 | Total |
+|---|---:|---:|---:|
+| Random Search (20 iter) | ~7 min | ~3 min | ~10 min |
+| Optuna (30 trials) | ~15 min | ~4 min | ~19 min |
+| Nested CV (3×3, 30 trials) | ~45 min | — (default params) | ~45 min |
+
+All jobs run **sequentially** on the full 260k dataset. Parallel execution caused server crashes due to LGBM spawning too many threads across jobs.
 
 **RF (Stage 1):**
 
