@@ -3595,10 +3595,15 @@ def main():
 
     # ── normal run: train on full data → submission file ─────────────────
     # Default model: Two-Stage Classifier (RF + LGBM, threshold=0.65)
-    # Best result from Week 05: Acc=0.7423, MCC=0.5211 (5-Fold CV)
+    # Week 05 baseline:  Acc=0.7423, MCC=0.5211 (5-Fold CV)
+    # Week 06 tuned params (Optuna, 30 trials, full 260k):
+    #   RF:   n_estimators=500, max_depth=16, min_samples_leaf=6, max_features=0.5
+    #   LGBM: n_estimators=500, learning_rate=0.05, num_leaves=76, min_child_samples=21
     print(">>> Training final Two-Stage pipeline on full training data (260k)")
-    print("    Stage 1: RF  (trained on all samples)")
-    print("    Stage 2: LGBM (trained on uncertain samples, threshold=0.65)")
+    print("    Stage 1: RF   (Week 06 tuned: n_estimators=500, max_depth=16,")
+    print("                   min_samples_leaf=6, max_features=0.5)")
+    print("    Stage 2: LGBM (Week 06 tuned: n_estimators=500, learning_rate=0.05,")
+    print("                   num_leaves=76, min_child_samples=21)")
 
     # ── Preprocess full training data ─────────────────────────────────────
     preproc_final = _build_preproc_steps(pipeline_kwargs)
@@ -3613,7 +3618,11 @@ def main():
     print(f"\n[Stage 1] Training RF on {len(X_train_proc):,} samples...")
     t0 = time.time()
     stage1_final = RandomForestClassifier(
-        n_estimators=200, max_depth=15, random_state=42, n_jobs=-1)
+        n_estimators=500,       # Week 06 tuned (Optuna)
+        max_depth=16,           # Week 06 tuned (Optuna)
+        min_samples_leaf=6,     # Week 06 tuned (Optuna)
+        max_features=0.5,       # Week 06 tuned (Optuna)
+        random_state=42, n_jobs=-1)
     stage1_final.fit(X_train_proc, y_train_arr)
     print(f"  Done in {time.time()-t0:.1f}s")
 
@@ -3623,7 +3632,9 @@ def main():
     oof_proba_final = np.zeros((len(X_train_proc), 3))
     for tr_idx, val_idx in kf_final.split(X_train_proc):
         clf_oof = RandomForestClassifier(
-            n_estimators=100, max_depth=15, random_state=42, n_jobs=-1)
+            n_estimators=500, max_depth=16,
+            min_samples_leaf=6, max_features=0.5,
+            random_state=42, n_jobs=-1)
         clf_oof.fit(X_train_proc[tr_idx], y_train_arr[tr_idx])
         oof_proba_final[val_idx] = clf_oof.predict_proba(X_train_proc[val_idx])
 
@@ -3645,7 +3656,10 @@ def main():
     print(f"\n  Training Stage 2 LGBM on {n_hard_final:,} hard cases...")
     t0 = time.time()
     stage2_final = LGBMClassifier(
-        n_estimators=300, learning_rate=0.05, num_leaves=63,
+        n_estimators=500,           # Week 06 tuned (Optuna)
+        learning_rate=0.05,         # Week 06 tuned (Optuna)
+        num_leaves=76,              # Week 06 tuned (Optuna)
+        min_child_samples=21,       # Week 06 tuned (Optuna)
         random_state=42, n_jobs=-1, verbose=-1)
     stage2_final.fit(X_train_proc[hard_mask_final], y_train_arr[hard_mask_final])
     print(f"  Done in {time.time()-t0:.1f}s")
