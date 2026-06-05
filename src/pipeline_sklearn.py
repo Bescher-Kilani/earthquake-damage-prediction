@@ -2902,7 +2902,7 @@ def tune_random_search(X_train_full, y_train_full,
         cv=5,
         scoring='accuracy',
         random_state=random_state,
-        n_jobs=-1,
+        n_jobs=1,   # RF itself uses n_jobs=-1 — no nested parallelism
         verbose=1,
         refit=True,
     )
@@ -2946,7 +2946,7 @@ def tune_random_search(X_train_full, y_train_full,
         cv=5,
         scoring='accuracy',
         random_state=random_state,
-        n_jobs=-1,
+        n_jobs=1,   # LGBM itself uses n_jobs=-1 — no nested parallelism
         verbose=1,
         refit=True,
     )
