@@ -2852,6 +2852,7 @@ def two_stage_classifier(X_train_full, y_train_full,
 def tune_random_search(X_train_full, y_train_full,
                        pipeline_kwargs=None,
                        n_iter=20,
+                       sample_size=None,
                        random_state=42):
     """
     Hyperparameter tuning via Random Search.
@@ -2870,6 +2871,14 @@ def tune_random_search(X_train_full, y_train_full,
 
     if pipeline_kwargs is None:
         pipeline_kwargs = {}
+
+    if sample_size is not None:
+        idx = np.random.choice(len(X_train_full),
+                               size=min(sample_size, len(X_train_full)),
+                               replace=False)
+        X_train_full = X_train_full.iloc[idx]
+        y_train_full = y_train_full.iloc[idx]
+        print(f"  (Subsampled to {len(X_train_full):,} samples)")
 
     print("\n" + "="*60)
     print("WEEK 06 — RANDOM SEARCH")
@@ -2943,7 +2952,7 @@ def tune_random_search(X_train_full, y_train_full,
         estimator=lgbm_base,
         param_distributions=lgbm_param_dist,
         n_iter=n_iter,
-        cv=5,
+        cv=3,       # 3-Fold instead of 5 — hard cases subset is large enough
         scoring='accuracy',
         random_state=random_state,
         n_jobs=1,   # LGBM itself uses n_jobs=-1 — no nested parallelism
@@ -2983,6 +2992,7 @@ def tune_random_search(X_train_full, y_train_full,
 def tune_optuna(X_train_full, y_train_full,
                 pipeline_kwargs=None,
                 n_trials=30,
+                sample_size=None,
                 random_state=42):
     """
     Hyperparameter tuning via Optuna (Bayesian Optimization / TPE).
@@ -3005,6 +3015,14 @@ def tune_optuna(X_train_full, y_train_full,
 
     if pipeline_kwargs is None:
         pipeline_kwargs = {}
+
+    if sample_size is not None:
+        idx = np.random.choice(len(X_train_full),
+                               size=min(sample_size, len(X_train_full)),
+                               replace=False)
+        X_train_full = X_train_full.iloc[idx]
+        y_train_full = y_train_full.iloc[idx]
+        print(f"  (Subsampled to {len(X_train_full):,} samples)")
 
     print("\n" + "="*60)
     print("WEEK 06 — OPTUNA HYPERPARAMETER TUNING")
@@ -3073,7 +3091,7 @@ def tune_optuna(X_train_full, y_train_full,
     print("\n[3/3] Tuning LGBM (Stage 2) with Optuna...")
     X_hard = X_proc[hard_mask]
     y_hard = y_arr[hard_mask]
-    kf_hard = KFold(n_splits=5, shuffle=True, random_state=random_state)
+    kf_hard = KFold(n_splits=3, shuffle=True, random_state=random_state)  # 3-Fold — faster on hard cases subset
 
     def lgbm_objective(trial):
         params = {
@@ -3134,6 +3152,7 @@ def tune_nested_cv(X_train_full, y_train_full,
                    n_outer=3,
                    n_inner=3,
                    n_trials=20,
+                   sample_size=None,
                    random_state=42):
     """
     Nested Cross-Validation for fair hyperparameter tuning evaluation.
@@ -3166,6 +3185,14 @@ def tune_nested_cv(X_train_full, y_train_full,
 
     if pipeline_kwargs is None:
         pipeline_kwargs = {}
+
+    if sample_size is not None:
+        idx = np.random.choice(len(X_train_full),
+                               size=min(sample_size, len(X_train_full)),
+                               replace=False)
+        X_train_full = X_train_full.iloc[idx]
+        y_train_full = y_train_full.iloc[idx]
+        print(f"  (Subsampled to {len(X_train_full):,} samples)")
 
     print("\n" + "="*60)
     print("WEEK 06 — NESTED CROSS-VALIDATION")
@@ -3473,6 +3500,7 @@ def main():
             X_train_full, y_train_full,
             pipeline_kwargs=pipeline_kwargs,
             n_iter=args.tune_n_iter,
+            sample_size=args.sample,
             random_state=42,
         )
         return
@@ -3484,6 +3512,7 @@ def main():
             X_train_full, y_train_full,
             pipeline_kwargs=pipeline_kwargs,
             n_trials=args.tune_trials,
+            sample_size=args.sample,
             random_state=42,
         )
         return
@@ -3495,6 +3524,7 @@ def main():
             X_train_full, y_train_full,
             pipeline_kwargs=pipeline_kwargs,
             n_trials=args.tune_trials,
+            sample_size=args.sample,
             random_state=42,
         )
         return
