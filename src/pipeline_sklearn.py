@@ -2843,6 +2843,501 @@ def two_stage_classifier(X_train_full, y_train_full,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Week 06: tune_random_search()
+# Random Search for RF (Stage 1) and LGBM (Stage 2)
+# Uses RandomizedSearchCV with 5-Fold CV
+# Primary metric: Accuracy
+# ─────────────────────────────────────────────────────────────────────────────
+
+def tune_random_search(X_train_full, y_train_full,
+                       pipeline_kwargs=None,
+                       n_iter=20,
+                       sample_size=None,
+                       random_state=42):
+    """
+    Hyperparameter tuning via Random Search.
+
+    Tunes RF (Stage 1) and LGBM (Stage 2) independently.
+    RF is tuned on all 260k samples with 5-Fold CV.
+    LGBM is tuned on the hard cases identified by RF OOF probabilities.
+
+    Parameters
+    ----------
+    n_iter : int
+        Number of random parameter combinations to try per model.
+    """
+    from sklearn.model_selection import RandomizedSearchCV
+    from scipy.stats import randint
+
+    if pipeline_kwargs is None:
+        pipeline_kwargs = {}
+
+    if sample_size is not None:
+        idx = np.random.choice(len(X_train_full),
+                               size=min(sample_size, len(X_train_full)),
+                               replace=False)
+        X_train_full = X_train_full.iloc[idx]
+        y_train_full = y_train_full.iloc[idx]
+        print(f"  (Subsampled to {len(X_train_full):,} samples)")
+
+    print("\n" + "="*60)
+    print("WEEK 06 — RANDOM SEARCH")
+    print(f"n_iter={n_iter} per model | 5-Fold CV | metric=Accuracy")
+    print("="*60)
+
+    # ── Preprocess once on full data ──────────────────────────────────────
+    print("\n[1/3] Preprocessing...")
+    preproc = _build_preproc_steps(pipeline_kwargs)
+    t0 = time.time()
+    X_proc = np.nan_to_num(
+        preproc.fit_transform(X_train_full, y_train_full).astype(float))
+    y_arr = y_train_full.values
+    print(f"  Done in {time.time()-t0:.1f}s | Features: {X_proc.shape[1]}")
+
+    # ── Stage 1: Tune RF on all 260k ─────────────────────────────────────
+    print("\n[2/3] Tuning RF (Stage 1)...")
+    rf_param_dist = {
+        'n_estimators':     [100, 200, 300, 500],
+        'max_depth':        randint(8, 26),
+        'min_samples_leaf': randint(1, 21),
+        'max_features':     ['sqrt', 'log2', 0.3, 0.5],
+    }
+
+    rf_base = RandomForestClassifier(random_state=random_state, n_jobs=-1)
+    rf_search = RandomizedSearchCV(
+        estimator=rf_base,
+        param_distributions=rf_param_dist,
+        n_iter=n_iter,
+        cv=5,
+        scoring='accuracy',
+        random_state=random_state,
+        n_jobs=1,   # RF itself uses n_jobs=-1 — no nested parallelism
+        verbose=1,
+        refit=True,
+    )
+    t0 = time.time()
+    rf_search.fit(X_proc, y_arr)
+    print(f"  Done in {time.time()-t0:.1f}s")
+    print(f"  Best RF params:    {rf_search.best_params_}")
+    print(f"  Best RF Acc (CV):  {rf_search.best_score_:.4f}")
+
+    # ── Find hard cases via OOF with best RF ─────────────────────────────
+    print("\n  Identifying hard cases with best RF (OOF)...")
+    UNCERTAINTY_THRESHOLD = 0.65
+    kf = KFold(n_splits=5, shuffle=True, random_state=random_state)
+    oof_proba = np.zeros((len(X_proc), 3))
+    for tr_idx, val_idx in kf.split(X_proc):
+        clf_oof = RandomForestClassifier(
+            **rf_search.best_params_,
+            random_state=random_state, n_jobs=-1)
+        clf_oof.fit(X_proc[tr_idx], y_arr[tr_idx])
+        oof_proba[val_idx] = clf_oof.predict_proba(X_proc[val_idx])
+
+    hard_mask = oof_proba.max(axis=1) < UNCERTAINTY_THRESHOLD
+    n_hard = hard_mask.sum()
+    print(f"  Hard cases: {n_hard:,} ({100*n_hard/len(y_arr):.1f}%)")
+
+    # ── Stage 2: Tune LGBM on hard cases ─────────────────────────────────
+    print("\n[3/3] Tuning LGBM (Stage 2) on hard cases...")
+    lgbm_param_dist = {
+        'n_estimators':      [200, 300, 500],
+        'learning_rate':     [0.01, 0.05, 0.1],
+        'num_leaves':        randint(31, 128),
+        'min_child_samples': randint(10, 51),
+    }
+
+    lgbm_base = LGBMClassifier(
+        random_state=random_state, n_jobs=-1, verbose=-1)
+    lgbm_search = RandomizedSearchCV(
+        estimator=lgbm_base,
+        param_distributions=lgbm_param_dist,
+        n_iter=n_iter,
+        cv=3,       # 3-Fold instead of 5 — hard cases subset is large enough
+        scoring='accuracy',
+        random_state=random_state,
+        n_jobs=1,   # LGBM itself uses n_jobs=-1 — no nested parallelism
+        verbose=1,
+        refit=True,
+    )
+    t0 = time.time()
+    lgbm_search.fit(X_proc[hard_mask], y_arr[hard_mask])
+    print(f"  Done in {time.time()-t0:.1f}s")
+    print(f"  Best LGBM params:   {lgbm_search.best_params_}")
+    print(f"  Best LGBM Acc (CV): {lgbm_search.best_score_:.4f}")
+
+    # ── Summary ──────────────────────────────────────────────────────────
+    results = {
+        'rf_best_params':   rf_search.best_params_,
+        'rf_best_acc':      round(rf_search.best_score_, 4),
+        'lgbm_best_params': lgbm_search.best_params_,
+        'lgbm_best_acc':    round(lgbm_search.best_score_, 4),
+    }
+
+    print("\n" + "="*60)
+    print("RANDOM SEARCH — SUMMARY")
+    print("="*60)
+    print(f"  RF   best Acc={results['rf_best_acc']}  "
+          f"params={results['rf_best_params']}")
+    print(f"  LGBM best Acc={results['lgbm_best_acc']}  "
+          f"params={results['lgbm_best_params']}")
+
+    return results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Week 06: tune_optuna()
+# Bayesian Optimization via Optuna for RF (Stage 1) and LGBM (Stage 2)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def tune_optuna(X_train_full, y_train_full,
+                pipeline_kwargs=None,
+                n_trials=30,
+                sample_size=None,
+                random_state=42):
+    """
+    Hyperparameter tuning via Optuna (Bayesian Optimization / TPE).
+
+    Same structure as tune_random_search() but uses Optuna instead of
+    RandomizedSearchCV. Optuna learns from previous trials and focuses
+    search on promising parameter regions.
+
+    Parameters
+    ----------
+    n_trials : int
+        Number of Optuna trials per model (default: 30).
+    """
+    try:
+        import optuna
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+    except ImportError:
+        print("ERROR: optuna not installed. Run: pip install optuna")
+        return {}
+
+    if pipeline_kwargs is None:
+        pipeline_kwargs = {}
+
+    if sample_size is not None:
+        idx = np.random.choice(len(X_train_full),
+                               size=min(sample_size, len(X_train_full)),
+                               replace=False)
+        X_train_full = X_train_full.iloc[idx]
+        y_train_full = y_train_full.iloc[idx]
+        print(f"  (Subsampled to {len(X_train_full):,} samples)")
+
+    print("\n" + "="*60)
+    print("WEEK 06 — OPTUNA HYPERPARAMETER TUNING")
+    print(f"n_trials={n_trials} per model | 5-Fold CV | metric=Accuracy")
+    print("="*60)
+
+    # ── Preprocess once ───────────────────────────────────────────────────
+    print("\n[1/3] Preprocessing...")
+    preproc = _build_preproc_steps(pipeline_kwargs)
+    t0 = time.time()
+    X_proc = np.nan_to_num(
+        preproc.fit_transform(X_train_full, y_train_full).astype(float))
+    y_arr = y_train_full.values
+    print(f"  Done in {time.time()-t0:.1f}s | Features: {X_proc.shape[1]}")
+
+    kf_tune = KFold(n_splits=5, shuffle=True, random_state=random_state)
+
+    # ── Stage 1: Tune RF ──────────────────────────────────────────────────
+    print("\n[2/3] Tuning RF (Stage 1) with Optuna...")
+
+    def rf_objective(trial):
+        params = {
+            'n_estimators':     trial.suggest_categorical(
+                                    'n_estimators', [100, 200, 300, 500]),
+            'max_depth':        trial.suggest_int('max_depth', 8, 25),
+            'min_samples_leaf': trial.suggest_int('min_samples_leaf', 1, 20),
+            'max_features':     trial.suggest_categorical(
+                                    'max_features', ['sqrt', 'log2', 0.3, 0.5]),
+        }
+        clf = RandomForestClassifier(
+            **params, random_state=random_state, n_jobs=-1)
+        fold_accs = []
+        for tr_idx, val_idx in kf_tune.split(X_proc):
+            clf_fold = clone(clf)
+            clf_fold.fit(X_proc[tr_idx], y_arr[tr_idx])
+            y_pred = clf_fold.predict(X_proc[val_idx])
+            fold_accs.append(accuracy_score(y_arr[val_idx], y_pred))
+        return np.mean(fold_accs)
+
+    t0 = time.time()
+    rf_study = optuna.create_study(
+        direction='maximize',
+        sampler=optuna.samplers.TPESampler(seed=random_state))
+    rf_study.optimize(rf_objective, n_trials=n_trials, show_progress_bar=True)
+    print(f"  Done in {time.time()-t0:.1f}s")
+    print(f"  Best RF params:   {rf_study.best_params}")
+    print(f"  Best RF Acc (CV): {rf_study.best_value:.4f}")
+
+    # ── Find hard cases with best RF ──────────────────────────────────────
+    print("\n  Identifying hard cases with best RF (OOF)...")
+    UNCERTAINTY_THRESHOLD = 0.65
+    kf_oof = KFold(n_splits=5, shuffle=True, random_state=random_state)
+    oof_proba = np.zeros((len(X_proc), 3))
+    for tr_idx, val_idx in kf_oof.split(X_proc):
+        clf_oof = RandomForestClassifier(
+            **rf_study.best_params,
+            random_state=random_state, n_jobs=-1)
+        clf_oof.fit(X_proc[tr_idx], y_arr[tr_idx])
+        oof_proba[val_idx] = clf_oof.predict_proba(X_proc[val_idx])
+
+    hard_mask = oof_proba.max(axis=1) < UNCERTAINTY_THRESHOLD
+    n_hard = hard_mask.sum()
+    print(f"  Hard cases: {n_hard:,} ({100*n_hard/len(y_arr):.1f}%)")
+
+    # ── Stage 2: Tune LGBM on hard cases ─────────────────────────────────
+    print("\n[3/3] Tuning LGBM (Stage 2) with Optuna...")
+    X_hard = X_proc[hard_mask]
+    y_hard = y_arr[hard_mask]
+    kf_hard = KFold(n_splits=3, shuffle=True, random_state=random_state)  # 3-Fold — faster on hard cases subset
+
+    def lgbm_objective(trial):
+        params = {
+            'n_estimators':      trial.suggest_categorical(
+                                     'n_estimators', [200, 300, 500]),
+            'learning_rate':     trial.suggest_categorical(
+                                     'learning_rate', [0.01, 0.05, 0.1]),
+            'num_leaves':        trial.suggest_int('num_leaves', 31, 127),
+            'min_child_samples': trial.suggest_int('min_child_samples', 10, 50),
+        }
+        clf = LGBMClassifier(
+            **params, random_state=random_state, n_jobs=-1, verbose=-1)
+        fold_accs = []
+        for tr_idx, val_idx in kf_hard.split(X_hard):
+            clf_fold = clone(clf)
+            clf_fold.fit(X_hard[tr_idx], y_hard[tr_idx])
+            y_pred = clf_fold.predict(X_hard[val_idx])
+            fold_accs.append(accuracy_score(y_hard[val_idx], y_pred))
+        return np.mean(fold_accs)
+
+    t0 = time.time()
+    lgbm_study = optuna.create_study(
+        direction='maximize',
+        sampler=optuna.samplers.TPESampler(seed=random_state))
+    lgbm_study.optimize(
+        lgbm_objective, n_trials=n_trials, show_progress_bar=True)
+    print(f"  Done in {time.time()-t0:.1f}s")
+    print(f"  Best LGBM params:   {lgbm_study.best_params}")
+    print(f"  Best LGBM Acc (CV): {lgbm_study.best_value:.4f}")
+
+    # ── Summary ──────────────────────────────────────────────────────────
+    results = {
+        'rf_best_params':   rf_study.best_params,
+        'rf_best_acc':      round(rf_study.best_value, 4),
+        'lgbm_best_params': lgbm_study.best_params,
+        'lgbm_best_acc':    round(lgbm_study.best_value, 4),
+    }
+
+    print("\n" + "="*60)
+    print("OPTUNA — SUMMARY")
+    print("="*60)
+    print(f"  RF   best Acc={results['rf_best_acc']}  "
+          f"params={results['rf_best_params']}")
+    print(f"  LGBM best Acc={results['lgbm_best_acc']}  "
+          f"params={results['lgbm_best_params']}")
+
+    return results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Week 06: tune_nested_cv()
+# Nested Cross-Validation for fair performance estimation
+# Outer: 3 folds | Inner: 3 folds + Optuna (20 trials)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def tune_nested_cv(X_train_full, y_train_full,
+                   pipeline_kwargs=None,
+                   n_outer=3,
+                   n_inner=3,
+                   n_trials=20,
+                   sample_size=None,
+                   random_state=42):
+    """
+    Nested Cross-Validation for fair hyperparameter tuning evaluation.
+
+    Outer loop: n_outer folds — each outer test fold is never seen during
+                                parameter selection (fair evaluation).
+    Inner loop: n_inner folds + Optuna — finds best RF params on inner folds
+                                         for each outer fold independently.
+
+    Reports:
+      - Best params found per outer fold (may differ between folds)
+      - Accuracy per outer fold on unseen outer test data
+      - Mean nested CV accuracy = fair performance estimate
+
+    Compare mean nested CV accuracy against normal CV accuracy in the README
+    to quantify the optimistic bias of standard hyperparameter tuning.
+
+    Parameters
+    ----------
+    n_outer  : int   outer CV folds (default: 3)
+    n_inner  : int   inner CV folds for Optuna (default: 3)
+    n_trials : int   Optuna trials per inner search (default: 20)
+    """
+    try:
+        import optuna
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+    except ImportError:
+        print("ERROR: optuna not installed. Run: pip install optuna")
+        return pd.DataFrame()
+
+    if pipeline_kwargs is None:
+        pipeline_kwargs = {}
+
+    if sample_size is not None:
+        idx = np.random.choice(len(X_train_full),
+                               size=min(sample_size, len(X_train_full)),
+                               replace=False)
+        X_train_full = X_train_full.iloc[idx]
+        y_train_full = y_train_full.iloc[idx]
+        print(f"  (Subsampled to {len(X_train_full):,} samples)")
+
+    print("\n" + "="*60)
+    print("WEEK 06 — NESTED CROSS-VALIDATION")
+    print(f"Outer={n_outer} folds | Inner={n_inner} folds | "
+          f"Optuna trials={n_trials}")
+    print("Tuning RF (Stage 1) | LGBM (Stage 2) uses default params")
+    print("="*60)
+
+    # ── Preprocess once on full data ──────────────────────────────────────
+    print("\n[1/2] Preprocessing...")
+    preproc = _build_preproc_steps(pipeline_kwargs)
+    t0 = time.time()
+    X_proc = np.nan_to_num(
+        preproc.fit_transform(X_train_full, y_train_full).astype(float))
+    y_arr = y_train_full.values
+    print(f"  Done in {time.time()-t0:.1f}s | Features: {X_proc.shape[1]}")
+
+    print("\n[2/2] Running Nested CV...")
+    outer_kf = KFold(
+        n_splits=n_outer, shuffle=True, random_state=random_state)
+
+    outer_results = []
+    UNCERTAINTY_THRESHOLD = 0.65
+
+    for outer_fold, (outer_tr_idx, outer_test_idx) in enumerate(
+            outer_kf.split(X_proc), 1):
+
+        print(f"\n{'─'*55}")
+        print(f"  Outer Fold {outer_fold}/{n_outer}  "
+              f"(train={len(outer_tr_idx):,}  test={len(outer_test_idx):,})")
+        print(f"{'─'*55}")
+
+        X_outer_tr   = X_proc[outer_tr_idx]
+        y_outer_tr   = y_arr[outer_tr_idx]
+        X_outer_test = X_proc[outer_test_idx]
+        y_outer_test = y_arr[outer_test_idx]
+
+        # ── Inner loop: find best RF params via Optuna on outer_tr ───────
+        inner_kf = KFold(
+            n_splits=n_inner, shuffle=True, random_state=random_state)
+
+        def rf_objective_inner(trial):
+            params = {
+                'n_estimators':     trial.suggest_categorical(
+                                        'n_estimators', [100, 200, 300, 500]),
+                'max_depth':        trial.suggest_int('max_depth', 8, 25),
+                'min_samples_leaf': trial.suggest_int(
+                                        'min_samples_leaf', 1, 20),
+                'max_features':     trial.suggest_categorical(
+                                        'max_features',
+                                        ['sqrt', 'log2', 0.3, 0.5]),
+            }
+            clf = RandomForestClassifier(
+                **params, random_state=random_state, n_jobs=-1)
+            fold_accs = []
+            for in_tr, in_val in inner_kf.split(X_outer_tr):
+                clf_fold = clone(clf)
+                clf_fold.fit(X_outer_tr[in_tr], y_outer_tr[in_tr])
+                y_pred = clf_fold.predict(X_outer_tr[in_val])
+                fold_accs.append(
+                    accuracy_score(y_outer_tr[in_val], y_pred))
+            return np.mean(fold_accs)
+
+        study = optuna.create_study(
+            direction='maximize',
+            sampler=optuna.samplers.TPESampler(seed=random_state))
+        study.optimize(
+            rf_objective_inner, n_trials=n_trials, show_progress_bar=False)
+
+        best_params = study.best_params
+        print(f"  Inner best params: {best_params}")
+        print(f"  Inner best Acc:    {study.best_value:.4f}")
+
+        # ── Train with best params on full outer_tr ───────────────────────
+        rf_final = RandomForestClassifier(
+            **best_params, random_state=random_state, n_jobs=-1)
+        rf_final.fit(X_outer_tr, y_outer_tr)
+
+        # Find hard cases via OOF on outer_tr (no leakage)
+        kf_oof = KFold(
+            n_splits=3, shuffle=True, random_state=random_state)
+        oof_proba = np.zeros((len(X_outer_tr), 3))
+        for in_tr, in_val in kf_oof.split(X_outer_tr):
+            clf_oof = RandomForestClassifier(
+                **best_params, random_state=random_state, n_jobs=-1)
+            clf_oof.fit(X_outer_tr[in_tr], y_outer_tr[in_tr])
+            oof_proba[in_val] = clf_oof.predict_proba(X_outer_tr[in_val])
+
+        hard_mask = oof_proba.max(axis=1) < UNCERTAINTY_THRESHOLD
+        n_hard = hard_mask.sum()
+
+        # Stage 2: LGBM with default params on hard cases
+        # (tuning LGBM here would double runtime without meaningful benefit
+        #  for the nested CV evaluation purpose)
+        lgbm_stage2 = LGBMClassifier(
+            n_estimators=300, learning_rate=0.05, num_leaves=63,
+            random_state=random_state, n_jobs=-1, verbose=-1)
+        if n_hard >= 50:
+            lgbm_stage2.fit(
+                X_outer_tr[hard_mask], y_outer_tr[hard_mask])
+
+        # ── Evaluate on outer test set (never seen during tuning) ─────────
+        proba_test = rf_final.predict_proba(X_outer_test)
+        y_pred = np.argmax(proba_test, axis=1) + 1
+        max_proba = proba_test.max(axis=1)
+
+        if n_hard >= 50:
+            uncertain_mask = max_proba < UNCERTAINTY_THRESHOLD
+            if uncertain_mask.sum() > 0:
+                y_pred[uncertain_mask] = lgbm_stage2.predict(
+                    X_outer_test[uncertain_mask])
+
+        acc = accuracy_score(y_outer_test, y_pred)
+        mcc = matthews_corrcoef(y_outer_test, y_pred)
+        print(f"  Outer test Acc={acc:.4f}  MCC={mcc:.4f}  "
+              f"hard cases={n_hard:,}")
+
+        outer_results.append({
+            'outer_fold':    outer_fold,
+            'best_params':   str(best_params),
+            'inner_acc':     round(study.best_value, 4),
+            'outer_acc':     round(acc, 4),
+            'outer_mcc':     round(mcc, 4),
+            'n_hard':        n_hard,
+        })
+
+    # ── Summary ──────────────────────────────────────────────────────────
+    df = pd.DataFrame(outer_results)
+    mean_acc = df['outer_acc'].mean()
+    mean_mcc = df['outer_mcc'].mean()
+    std_acc  = df['outer_acc'].std()
+
+    print("\n" + "="*60)
+    print("NESTED CV — SUMMARY")
+    print("="*60)
+    print(df.to_string(index=False))
+    print(f"\n  Mean Nested CV Acc = {mean_acc:.4f} +/- {std_acc:.4f}")
+    print(f"  Mean Nested CV MCC = {mean_mcc:.4f}")
+    print(f"\n  → Use this value in the README to compare against")
+    print(f"    normal CV Acc (optimistic bias = normal_CV - nested_CV)")
+
+    return df
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -2891,6 +3386,17 @@ def main():
                         help='Week 05 Exp 3: Two-stage classifier — RF on all, LGBM on hard cases')
     parser.add_argument('--uncertainty-threshold', type=float, default=0.50,
                         help='Max-probability threshold below which Stage 1 considers a sample uncertain (default: 0.50)')
+    # ── Week 06: Hyperparameter Tuning ────────────────────────────────────
+    parser.add_argument('--tune-random', action='store_true',
+                        help='Week 06: Random Search for RF and LGBM hyperparameters (RandomizedSearchCV)')
+    parser.add_argument('--tune-optuna', action='store_true',
+                        help='Week 06: Bayesian Optimization via Optuna (TPE sampler)')
+    parser.add_argument('--tune-nested-cv', action='store_true',
+                        help='Week 06: Nested CV for fair performance estimation (compare with normal CV in README)')
+    parser.add_argument('--tune-trials', type=int, default=30,
+                        help='Number of trials for Optuna or Nested CV inner search (default: 30)')
+    parser.add_argument('--tune-n-iter', type=int, default=20,
+                        help='Number of iterations for Random Search (default: 20)')
     args = parser.parse_args()
 
     voting_weights = parse_voting_weights(args.voting_weights)
@@ -2987,6 +3493,42 @@ def main():
         )
         return
 
+    # ── --tune-random: Week 06 Random Search ─────────────────────────────
+    if args.tune_random:
+        print(f">>> Week 06 — Random Search (n_iter={args.tune_n_iter})")
+        tune_random_search(
+            X_train_full, y_train_full,
+            pipeline_kwargs=pipeline_kwargs,
+            n_iter=args.tune_n_iter,
+            sample_size=args.sample,
+            random_state=42,
+        )
+        return
+
+    # ── --tune-optuna: Week 06 Optuna ─────────────────────────────────────
+    if args.tune_optuna:
+        print(f">>> Week 06 — Optuna Tuning (n_trials={args.tune_trials})")
+        tune_optuna(
+            X_train_full, y_train_full,
+            pipeline_kwargs=pipeline_kwargs,
+            n_trials=args.tune_trials,
+            sample_size=args.sample,
+            random_state=42,
+        )
+        return
+
+    # ── --tune-nested-cv: Week 06 Nested CV ───────────────────────────────
+    if args.tune_nested_cv:
+        print(f">>> Week 06 — Nested CV (n_trials={args.tune_trials})")
+        tune_nested_cv(
+            X_train_full, y_train_full,
+            pipeline_kwargs=pipeline_kwargs,
+            n_trials=args.tune_trials,
+            sample_size=args.sample,
+            random_state=42,
+        )
+        return
+
     # ── --analyze: deep error analysis ───────────────────────────────────
     if args.analyze:
         print(">>> Deep Error Analysis - RF, LGBM, XGB, CatBoost, Voting, and Stacking")
@@ -3053,10 +3595,15 @@ def main():
 
     # ── normal run: train on full data → submission file ─────────────────
     # Default model: Two-Stage Classifier (RF + LGBM, threshold=0.65)
-    # Best result from Week 05: Acc=0.7423, MCC=0.5211 (5-Fold CV)
+    # Week 05 baseline:  Acc=0.7423, MCC=0.5211 (5-Fold CV)
+    # Week 06 tuned params (Optuna, 30 trials, full 260k):
+    #   RF:   n_estimators=500, max_depth=16, min_samples_leaf=6, max_features=0.5
+    #   LGBM: n_estimators=500, learning_rate=0.05, num_leaves=76, min_child_samples=21
     print(">>> Training final Two-Stage pipeline on full training data (260k)")
-    print("    Stage 1: RF  (trained on all samples)")
-    print("    Stage 2: LGBM (trained on uncertain samples, threshold=0.65)")
+    print("    Stage 1: RF   (Week 06 tuned: n_estimators=500, max_depth=16,")
+    print("                   min_samples_leaf=6, max_features=0.5)")
+    print("    Stage 2: LGBM (Week 06 tuned: n_estimators=500, learning_rate=0.05,")
+    print("                   num_leaves=76, min_child_samples=21)")
 
     # ── Preprocess full training data ─────────────────────────────────────
     preproc_final = _build_preproc_steps(pipeline_kwargs)
@@ -3071,7 +3618,11 @@ def main():
     print(f"\n[Stage 1] Training RF on {len(X_train_proc):,} samples...")
     t0 = time.time()
     stage1_final = RandomForestClassifier(
-        n_estimators=200, max_depth=15, random_state=42, n_jobs=-1)
+        n_estimators=500,       # Week 06 tuned (Optuna)
+        max_depth=16,           # Week 06 tuned (Optuna)
+        min_samples_leaf=6,     # Week 06 tuned (Optuna)
+        max_features=0.5,       # Week 06 tuned (Optuna)
+        random_state=42, n_jobs=-1)
     stage1_final.fit(X_train_proc, y_train_arr)
     print(f"  Done in {time.time()-t0:.1f}s")
 
@@ -3081,7 +3632,9 @@ def main():
     oof_proba_final = np.zeros((len(X_train_proc), 3))
     for tr_idx, val_idx in kf_final.split(X_train_proc):
         clf_oof = RandomForestClassifier(
-            n_estimators=100, max_depth=15, random_state=42, n_jobs=-1)
+            n_estimators=500, max_depth=16,
+            min_samples_leaf=6, max_features=0.5,
+            random_state=42, n_jobs=-1)
         clf_oof.fit(X_train_proc[tr_idx], y_train_arr[tr_idx])
         oof_proba_final[val_idx] = clf_oof.predict_proba(X_train_proc[val_idx])
 
@@ -3103,7 +3656,10 @@ def main():
     print(f"\n  Training Stage 2 LGBM on {n_hard_final:,} hard cases...")
     t0 = time.time()
     stage2_final = LGBMClassifier(
-        n_estimators=300, learning_rate=0.05, num_leaves=63,
+        n_estimators=500,           # Week 06 tuned (Optuna)
+        learning_rate=0.05,         # Week 06 tuned (Optuna)
+        num_leaves=76,              # Week 06 tuned (Optuna)
+        min_child_samples=21,       # Week 06 tuned (Optuna)
         random_state=42, n_jobs=-1, verbose=-1)
     stage2_final.fit(X_train_proc[hard_mask_final], y_train_arr[hard_mask_final])
     print(f"  Done in {time.time()-t0:.1f}s")
