@@ -678,7 +678,3 @@ Week 4: single split. Week 5–6: 5-Fold CV mean. Week 6 Nested CV Acc = 0.7535 
 
 ---
 
-## Open Questions / Next Steps
-
-- Final presentation (09.06.)
-- Report submission (15.06.)

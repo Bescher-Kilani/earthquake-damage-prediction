@@ -1,9 +1,6 @@
 """
 Earthquake Damage Prediction Pipeline
-Week 04: Prediction Models — sklearn Pipeline Edition + Model Comparison
-
-All logic from pipeline.py is preserved; it is now wrapped in
-sklearn-compatible transformers (BaseEstimator + TransformerMixin).
+Team 2 — DS Lab 2026
 
 Pipeline Steps:
 1. Load data from CSV files
@@ -16,18 +13,9 @@ Pipeline Steps:
 4. Feature Engineering:
    - Recombine binary features into categorical features
    - Target Encoding for high-cardinality features
-5. Train classifier
+5. Train Two-Stage classifier (RF + LGBM, threshold=0.65)
 6. Generate predictions on test set
 7. Save submission file in competition format
-
-NEW Week 04:
-   - compare_models(): compares Decision Tree, kNN, Logistic Regression,
-     Naive Bayes, SVM, tree ensembles, Voting, and Stacking using
-     cross-validation on X_trainval
-   - Voting supports --voting-mode soft or hard
-   - Stacking prints/saves the final-estimator coefficient contribution
-     for each base model
-   - Primary metric: Accuracy (competition); secondary: MCC (course)
 """
 
 import pandas as pd
