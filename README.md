@@ -2,7 +2,7 @@
 
 Predicting the damage grade of buildings after the 2015 Gorkha earthquake in Nepal (ordinal, 3 classes). Built as Phase 1 of the Data Science Lab 2026 at KIT.
 
-**Final model:** two-stage Random Forest + LightGBM, tuned with Optuna
+**Final model:** two-stage Random Forest + LightGBM, tuned with Optuna  
 **Result (5-fold CV):** Accuracy **0.7551** (micro-F1), MCC **0.5424**. Nested CV gives a fair estimate of 0.7535.
 
 This page is the short overview. All experiments, tables and confusion matrices are in [docs/FULL_DOCUMENTATION.md](docs/FULL_DOCUMENTATION.md).
