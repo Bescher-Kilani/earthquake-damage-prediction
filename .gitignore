@@ -1,47 +1,33 @@
-cat > .gitignore << 'EOF'
-# Data files (large CSVs)
-*.csv
-data/
-*/data/
-
-# CatBoost training artifacts
-catboost_info/
-
-# Output/Prediction files
-*_prediction.csv
-Team*_prediction.csv
-
-# Temporary/Lock files
-.~lock.*
-*.tmp
-
-# Python cache
+# Environment
+venv/
+.venv/
 __pycache__/
 *.pyc
-*.pyo
 .ipynb_checkpoints/
 
-# Baseline/old files
-../baseline_*.py
-baseline_*.py
+# Data (download from DrivenData, see data/README.md)
+data/*
+!data/README.md
 
-# Virtual environments
-venv/
-env/
-*/venv/
-*/env/
+# Generated outputs
+outputs/*
+!outputs/.gitkeep
 
-# IDE settings
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS files
+# Tool caches
+catboost_info/
 .DS_Store
-Thumbs.db
 
-# Large presentation files (optional)
+# Course material and files not part of the project
 *.pptx
-EOF
+*.odp
+*.pdf
+baseline_prediction.py
+submission_format.csv
+week3-feature engineering/
+# Editor files
+.vscode/
+.~lock.*
 
+# Editor files
+.vscode/
+.~lock.*

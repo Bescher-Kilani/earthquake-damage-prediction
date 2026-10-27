@@ -1,8 +1,13 @@
 pandas
 numpy
+scipy
 scikit-learn
 lightgbm
 xgboost
 catboost
 imbalanced-learn
 optuna
+# notebooks/week01_exploration.ipynb
+matplotlib
+seaborn
+jupyter
