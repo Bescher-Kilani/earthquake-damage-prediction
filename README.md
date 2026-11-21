@@ -7,6 +7,8 @@ Predicting the damage grade of buildings after the 2015 Gorkha earthquake in Nep
 
 This page is the short overview. All experiments, tables and confusion matrices are in [docs/FULL_DOCUMENTATION.md](docs/FULL_DOCUMENTATION.md).
 
+![Pipeline overview](docs/figures/01_pipeline.png)
+
 ## Task
 
 - Competition: [Richter's Predictor: Modeling Earthquake Damage](https://www.drivendata.org/competitions/57/nepal-earthquake/) (DrivenData)
@@ -20,10 +22,13 @@ This page is the short overview. All experiments, tables and confusion matrices 
 .
 ├── data/                    # not tracked, see data/README.md
 ├── docs/
-│   └── FULL_DOCUMENTATION.md  # complete results of all weeks
+│   ├── FULL_DOCUMENTATION.md  # complete results of all weeks
+│   └── figures/               # process plots
 ├── notebooks/
 │   └── week01_exploration.ipynb
 ├── outputs/                 # generated results (not tracked)
+├── plots/
+│   └── plot_process_figures.py  # draws the figures in docs/figures/
 ├── src/
 │   └── pipeline_sklearn.py  # full pipeline, all experiments via CLI flags
 ├── requirements.txt
@@ -62,6 +67,8 @@ Run `python3 src/pipeline_sklearn.py --help` for all options.
 
 ## Progress
 
+![Accuracy and MCC per week](docs/figures/03_progress.png)
+
 | Week | Topic | Accuracy | MCC |
 |---|---|---:|---:|
 | 2 | Cleaning & pipeline | 0.6881 | 0.4077 |
@@ -78,6 +85,8 @@ Notebook: [`notebooks/week01_exploration.ipynb`](notebooks/week01_exploration.ip
 - `age` is right-skewed with outliers up to 995 years (likely placeholder values).
 - Many binary `has_secondary_use_*` and `has_superstructure_*` columns are >95% one class.
 - Highest mutual information with the target: `geo_level_3_id` (0.30), `geo_level_2_id` (0.23), `geo_level_1_id` (0.13), `foundation_type` (0.09).
+
+![Target distribution and mutual information](docs/figures/02_target_and_mutual_information.png)
 
 ## Week 2: Cleaning & Pipeline
 
@@ -116,6 +125,10 @@ Compared Decision Tree, Random Forest, LightGBM, XGBoost, CatBoost, kNN, Logisti
 - Main error for every model: **grade 3 predicted as grade 2** (34.8% of true grade 3 for Stacking).
 - 22% of validation samples are misclassified by all four ensembles at once.
 
+![Model comparison: accuracy, MCC and training time](docs/figures/04_model_comparison.png)
+
+![Stacking confusion matrix](docs/figures/05_confusion_matrix.png)
+
 ## Week 5: Imbalanced Multi-Class Data
 
 8 sampling strategies, evaluated with 5-fold CV on all 260k samples:
@@ -131,10 +144,14 @@ Compared Decision Tree, Random Forest, LightGBM, XGBoost, CatBoost, kNN, Logisti
 | EasyEnsemble | 0.6587 | 0.4517 | 0.793 |
 | ClusterCentroids | 0.4450 | 0.3241 | 0.919 |
 
+![Sampling strategies: accuracy vs. grade 1 recall](docs/figures/06_sampling_tradeoff.png)
+
 - Sampling does not help: every gain in minority recall costs overall accuracy.
 - Threshold tuning lowered accuracy (RF −0.021, LightGBM −0.016).
 - Boundary features (5 interactions) gave +0.0002, so the grade 2/3 confusion is inherent ambiguity, not a feature gap.
 - **Two-stage classifier** (RF on all samples, LightGBM on uncertain samples with max probability < 0.65): +0.0012 accuracy and +0.0059 MCC over the RF baseline in all 5 folds.
+
+![Two-stage classifier: threshold sweep](docs/figures/07_two_stage_threshold.png)
 
 ## Week 6: Hyperparameter Tuning
 
@@ -146,6 +163,8 @@ Random search (20 iterations), Optuna/TPE (30 trials) and nested CV (3 outer × 
 | Random search | 0.7554 |
 | Optuna | 0.7551 |
 | Nested CV (unbiased) | 0.7535 |
+
+![Tuning results and nested CV](docs/figures/08_tuning.png)
 
 - Optimistic bias of normal CV is only 0.0016, so the tuned parameters generalize.
 - Grid search was skipped: 256 combinations × 5 folds would take ~9 h per model.

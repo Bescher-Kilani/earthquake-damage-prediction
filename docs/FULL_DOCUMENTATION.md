@@ -6,6 +6,16 @@ This project builds a machine-learning pipeline to predict building earthquake d
 
 ---
 
+## Process at a glance
+
+![Pipeline overview](figures/01_pipeline.png)
+
+![Accuracy and MCC per week](figures/03_progress.png)
+
+W4 is a single validation split, W5 and W6 are 5-fold CV means (see [Overall Performance](#overall-performance)), so the points are not strictly comparable. The raw data and the generated result files are not published, so all figures are drawn from the tables in this document by `plots/plot_process_figures.py` and written to `docs/figures/`.
+
+---
+
 ## Setup
 
 See the [README](../README.md#setup). Data download: [data/README.md](../data/README.md).
@@ -119,6 +129,8 @@ Notebook: [`notebooks/week01_exploration.ipynb`](../notebooks/week01_exploration
 **Redundancy**
 
 - Only 2 feature pairs with |correlation| > 0.7: `height_percentage` and `count_floors_pre_eq` (0.77), `has_secondary_use_agriculture` and `has_secondary_use` (0.74).
+
+![Target distribution and mutual information](figures/02_target_and_mutual_information.png)
 
 ---
 
@@ -251,6 +263,10 @@ Stacking contribution summary:
 | XGBoost | 0.7392 | 0.5146 | 32.6s |
 | CatBoost | 0.7366 | 0.5087 | 10.4s |
 
+![Model comparison: accuracy, MCC and training time](figures/04_model_comparison.png)
+
+Stacking is only 0.11 pp ahead of the Random Forest in accuracy but needs about 12 times the training time.
+
 ### Error Analysis
 
 Biggest confusion for all models: **Grade 3 predicted as Grade 2**.
@@ -271,6 +287,8 @@ Biggest confusion for all models: **Grade 3 predicted as Grade 2**.
 | True Grade 1 | 2,642 | 2,325 | 58 | 5,025 |
 | True Grade 2 | 1,119 | 24,815 | 3,718 | 29,652 |
 | True Grade 3 | 75 | 6,063 | 11,306 | 17,444 |
+
+![Stacking confusion matrix](figures/05_confusion_matrix.png)
 
 ### Stacking Classification Metrics
 
@@ -486,6 +504,8 @@ ClusterCentroids:   Acc=0.44   G1-Recall=0.92   (−0.30 Acc  — unusable)
 
 Best compromise if G1-Recall matters: **SMOTE + LGBM** (Acc=0.7342, G1-Recall=0.614, only −0.007 Acc loss).
 
+![Sampling strategies: accuracy vs. grade 1 recall](figures/06_sampling_tradeoff.png)
+
 ---
 
 ### Part 2: Additional Experiments
@@ -533,6 +553,8 @@ Stage 1: RF on all samples. Stage 2: LGBM on uncertain samples. Five thresholds 
 | 0.70 | 0.7421 | +0.0010 | 0.5206 | 0.526 | 20,605 |
 
 **Best result of Week 5.** Threshold=0.65 consistently improves both Accuracy (+0.0012) and MCC (+0.0059) over 5 folds.
+
+![Two-stage classifier: threshold sweep](figures/07_two_stage_threshold.png)
 
 ### Week 5 — Final Decision
 
@@ -662,6 +684,10 @@ All jobs run **sequentially** on the full 260k dataset. Parallel execution crash
 | Optimistic bias | 0.0016 | Very small — tuning is stable |
 
 Bias of 0.0016 confirms the tuned parameters generalize well and are not overfit to the CV folds.
+
+![Tuning results and nested CV](figures/08_tuning.png)
+
+Left: "Default" is the untuned value 0.7423 from the Week 6 summary (identical to the Week 5 two-stage result; the plain Random Forest baseline was 0.7411). Right: inner CV is the score used to pick the parameters, outer fold is the held-out evaluation. Both y-axes are truncated.
 
 ### Final Model — Week 6
 
