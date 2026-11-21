@@ -57,8 +57,15 @@ def node(ax, x, y, w, h, title, sub, filled=False, edge=TEAL):
 	ax.text(x + w / 2, y + h * 0.26, sub, ha="center", va="center", fontsize=8.5, color=col)
 
 
-def arrow(ax, p0, p1, color=DARK, style="-|>"):
-	ax.add_patch(FancyArrowPatch(p0, p1, arrowstyle=style, mutation_scale=14, color=color, lw=1.5))
+def arrow(ax, p0, p1, color=DARK, style="-|>", shrink=2):
+	ax.add_patch(FancyArrowPatch(p0, p1, arrowstyle=style, mutation_scale=14, color=color, lw=1.5,
+		shrinkA=shrink, shrinkB=shrink))
+
+
+def route(ax, points, color=DARK):
+	"""Plain polyline (no arrowhead) with sharp corners."""
+	xs, ys = zip(*points)
+	ax.plot(xs, ys, color=color, lw=1.5, solid_joinstyle="miter", solid_capstyle="butt")
 
 
 def fig_pipeline() -> None:
@@ -85,9 +92,8 @@ def fig_pipeline() -> None:
 	ax.text(0.15, 5.25, "Preprocessing: all statistics fit on the training part only",
 		fontsize=10.5, color=RED, fontweight="bold", va="center")
 	last_x = x0 + (len(top) - 1) * (w + gap) + w / 2
-	arrow(ax, (last_x, 3.68), (last_x, 3.05), style="-|>")
-	ax.plot([last_x, 1.1], [3.05, 3.05], color=DARK, lw=1.5)
-	arrow(ax, (1.1, 3.05), (1.1, 2.55))
+	route(ax, [(last_x, 3.68), (last_x, 3.05), (1.1, 3.05)])
+	arrow(ax, (1.1, 3.05), (1.1, 2.57), shrink=0)
 	node(ax, 0.15, 1.25, 2.1, 1.3, "Stage 1:\nRandom Forest", "all samples\ndepth 16, 500 trees", filled=True)
 	node(ax, 3.1, 1.25, 2.4, 1.3, "max probability\n< 0.65 ?", "uncertain samples\n(~29 % of data)", edge=RED)
 	node(ax, 6.4, 1.25, 2.4, 1.3, "Stage 2:\nLightGBM", "uncertain samples only\n76 leaves, 500 rounds", filled=True)
@@ -97,9 +103,8 @@ def fig_pipeline() -> None:
 	ax.text(5.95, 2.12, "yes", ha="center", fontsize=9, color=RED, fontweight="bold")
 	arrow(ax, (8.82, 1.9), (9.67, 1.9))
 	# confident samples skip stage 2
-	ax.plot([4.3, 4.3], [1.22, 0.6], color=DARK, lw=1.5)
-	ax.plot([4.3, 10.75], [0.6, 0.6], color=DARK, lw=1.5)
-	arrow(ax, (10.75, 0.6), (10.75, 1.22))
+	route(ax, [(4.3, 1.22), (4.3, 0.6), (10.75, 0.6)])
+	arrow(ax, (10.75, 0.6), (10.75, 1.22), shrink=0)
 	ax.text(7.5, 0.8, "no: keep the Random Forest prediction", ha="center", fontsize=9, color=DARK)
 	ax.text(12.2, 1.9, "Metric: accuracy (= micro-F1),\nMCC as secondary metric", fontsize=9,
 		va="center", color=DARK)
