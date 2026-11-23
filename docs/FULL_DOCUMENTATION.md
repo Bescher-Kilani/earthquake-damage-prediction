@@ -104,9 +104,19 @@ Notebook: [`notebooks/week01_exploration.ipynb`](../notebooks/week01_exploration
 - Grade 3 buildings tend to have more floors and greater height than Grade 1.
 - 14 binary columns are more than 95% one class, for example `has_secondary_use_use_police`, `has_secondary_use_school`, `has_superstructure_other`, `has_superstructure_rc_engineered`.
 
+![Binary feature imbalance (slide, Week 1)](figures/09_binary_feature_imbalance.png)
+
+![Building age vs. damage (slide, Week 1)](figures/13_building_age.png)
+
 **Geography**
 
 - Average damage varies strongly between `geo_level_1_id` regions: highest in regions 17 (2.79), 18 (2.71), 21 (2.56); lowest in regions 26 (1.73), 24 (1.89), 5 (1.92).
+
+![Mean damage grade per geo_level_1 region (slide, Week 1)](figures/10_damage_by_region.png)
+
+![Categorical features vs. damage grade (slide, Week 1)](figures/11_categorical_damage_distribution.png)
+
+![Superstructure material: frequency and damage (slide, Week 1)](figures/12_superstructure_material.png)
 
 **Relationship to the target**
 
@@ -129,6 +139,8 @@ Notebook: [`notebooks/week01_exploration.ipynb`](../notebooks/week01_exploration
 **Redundancy**
 
 - Only 2 feature pairs with |correlation| > 0.7: `height_percentage` and `count_floors_pre_eq` (0.77), `has_secondary_use_agriculture` and `has_secondary_use` (0.74).
+
+![Pearson correlation of numerical features and target (slide, Week 1)](figures/14_numerical_correlation.png)
 
 ![Target distribution and mutual information](figures/02_target_and_mutual_information.png)
 
