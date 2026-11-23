@@ -88,6 +88,10 @@ Notebook: [`notebooks/week01_exploration.ipynb`](notebooks/week01_exploration.ip
 
 ![Target distribution and mutual information](docs/figures/02_target_and_mutual_information.png)
 
+![Mean damage grade per region (slide, Week 1)](docs/figures/10_damage_by_region.png)
+
+![Superstructure material: frequency and damage (slide, Week 1)](docs/figures/12_superstructure_material.png)
+
 ## Week 2: Cleaning & Pipeline
 
 - Split before cleaning; all statistics are fit on the training part only (no leakage).
